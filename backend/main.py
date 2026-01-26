@@ -97,6 +97,12 @@ class OptimizationRequest(BaseModel):
     constraints: Optional[Dict[str, tuple]] = None
 
 
+@app.get("/api/health")
+async def health_check():
+    """Health check endpoint."""
+    return {"status": "healthy", "version": "1.0.0"}
+
+
 class ScenarioRequest(BaseModel):
     name: str
     spend_allocation: Dict[str, float]
@@ -498,7 +504,35 @@ async def get_model_results():
     y_pred = np.exp(y_pred_log) - 1
     mape = np.mean(np.abs((y - y_pred) / y)) * 100
 
-    return {
+    # Compute decomposition time series
+    df_agg = session_data.get('df_agg')
+    decomposition = []
+    if df_agg is not None:
+        date_col = mapping['date_col']
+        dates = pd.to_datetime(df_agg[date_col]).dt.strftime('%Y-%m-%d').tolist()
+
+        # Calculate baseline and channel contributions per period
+        beta_mean = posterior['beta'].mean(axis=(0, 1))
+        intercept_mean = posterior['intercept'].mean()
+
+        for i, date in enumerate(dates):
+            row = {"date": date, "actual": float(y[i])}
+
+            # Baseline (intercept contribution)
+            baseline = np.exp(intercept_mean)
+            row["baseline"] = float(baseline)
+
+            # Channel contributions
+            total_media = 0
+            for j, col in enumerate(mapping['media_cols']):
+                contrib = np.exp(beta_mean[j] * X_media_log[i, j]) - 1
+                contrib_scaled = baseline * contrib
+                row[col] = float(max(0, contrib_scaled))
+                total_media += row[col]
+
+            decomposition.append(row)
+
+    return clean_for_json({
         "r_squared": float(r_squared),
         "mape": float(mape),
         "contributions": contributions,
@@ -511,7 +545,8 @@ async def get_model_results():
             }
             for col in mapping['media_cols']
         },
-    }
+        "decomposition": decomposition,
+    })
 
 
 @app.post("/api/optimize")

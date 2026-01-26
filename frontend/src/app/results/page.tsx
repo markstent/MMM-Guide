@@ -14,8 +14,10 @@ import {
   Line,
   AreaChart,
   Area,
+  Legend,
 } from 'recharts'
 import { useAppState } from '@/lib/store'
+import { exportToCSV } from '@/lib/utils'
 
 const chartColors = ['var(--chart-1)', 'var(--chart-2)', 'var(--chart-3)', 'var(--chart-4)', 'var(--chart-5)']
 
@@ -78,6 +80,27 @@ export default function ResultsPage() {
   // Get R-squared and MAPE with proper display
   const rSquared = results.rSquared ?? 0
   const mape = results.mape ?? 0
+
+  // Handle ROI export
+  const handleExportROI = () => {
+    if (roiData.length === 0) return
+    const exportData = roiData.map(row => ({
+      Channel: row.channel,
+      'Total Spend': row.spend,
+      'Contribution': row.contribution,
+      'ROI': row.roi,
+      'Elasticity': results.elasticities?.[row.channel]?.mean ?? null,
+      'Elasticity CI Lower': results.elasticities?.[row.channel]?.ci_lower ?? null,
+      'Elasticity CI Upper': results.elasticities?.[row.channel]?.ci_upper ?? null,
+    }))
+    exportToCSV(exportData, 'mmm_roi_summary')
+  }
+
+  // Get decomposition data for chart
+  const decompositionData = results.decomposition || []
+  const mediaChannels = decompositionData.length > 0
+    ? Object.keys(decompositionData[0]).filter(k => !['date', 'actual', 'baseline'].includes(k))
+    : []
 
   return (
     <div className="flex flex-col h-screen">
@@ -247,7 +270,10 @@ export default function ResultsPage() {
           <div className="p-5 rounded-xl bg-card border border-border">
             <div className="flex items-center justify-between mb-4">
               <h3 className="font-semibold text-foreground">Channel ROI Summary</h3>
-              <button className="flex items-center gap-2 px-3 h-8 rounded-md border border-border text-foreground-muted hover:text-foreground transition-colors">
+              <button
+                onClick={handleExportROI}
+                className="flex items-center gap-2 px-3 h-8 rounded-md border border-border text-foreground-muted hover:text-foreground transition-colors"
+              >
                 <Download className="w-4 h-4" />
                 <span className="text-sm">Export</span>
               </button>
@@ -306,6 +332,72 @@ export default function ResultsPage() {
               </table>
             </div>
           </div>
+
+          {/* Sales Decomposition Chart */}
+          {decompositionData.length > 0 && (
+            <div className="p-5 rounded-xl bg-card border border-border">
+              <div className="flex items-center justify-between mb-4">
+                <h3 className="font-semibold text-foreground">Sales Decomposition</h3>
+                <span className="text-xs text-foreground-muted">Baseline + Channel Contributions</span>
+              </div>
+              <div className="h-[320px]">
+                <ResponsiveContainer width="100%" height="100%">
+                  <AreaChart data={decompositionData}>
+                    <CartesianGrid strokeDasharray="3 3" stroke="var(--border)" />
+                    <XAxis
+                      dataKey="date"
+                      stroke="var(--foreground-muted)"
+                      fontSize={12}
+                      tickFormatter={(v) => new Date(v).toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}
+                    />
+                    <YAxis
+                      stroke="var(--foreground-muted)"
+                      fontSize={12}
+                      tickFormatter={(v) => `$${(v / 1000).toFixed(0)}k`}
+                    />
+                    <Tooltip
+                      contentStyle={{
+                        backgroundColor: 'var(--card)',
+                        border: '1px solid var(--border)',
+                        borderRadius: '8px',
+                      }}
+                      formatter={(value: number) => [`$${value.toLocaleString()}`, '']}
+                      labelFormatter={(label) => new Date(label).toLocaleDateString('en-US', { month: 'long', day: 'numeric', year: 'numeric' })}
+                    />
+                    <Legend />
+                    <Area
+                      type="monotone"
+                      dataKey="baseline"
+                      stackId="1"
+                      stroke="var(--foreground-muted)"
+                      fill="var(--background-secondary)"
+                      name="Baseline"
+                    />
+                    {mediaChannels.map((channel, i) => (
+                      <Area
+                        key={channel}
+                        type="monotone"
+                        dataKey={channel}
+                        stackId="1"
+                        stroke={chartColors[i % chartColors.length]}
+                        fill={chartColors[i % chartColors.length]}
+                        name={channel}
+                        fillOpacity={0.7}
+                      />
+                    ))}
+                    <Line
+                      type="monotone"
+                      dataKey="actual"
+                      stroke="var(--foreground)"
+                      strokeWidth={2}
+                      dot={false}
+                      name="Actual Sales"
+                    />
+                  </AreaChart>
+                </ResponsiveContainer>
+              </div>
+            </div>
+          )}
 
           {/* Continue Button */}
           <div className="flex justify-end">

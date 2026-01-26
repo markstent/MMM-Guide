@@ -74,6 +74,7 @@ export default function TrainingPage() {
                 ess_min: trainData.diagnostics?.ess_min || 1000,
                 divergences: trainData.diagnostics?.divergences || 0,
               },
+              decomposition: data.decomposition,
             })
           }
 

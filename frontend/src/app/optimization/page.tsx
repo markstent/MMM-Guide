@@ -3,9 +3,22 @@
 import { useState, useEffect } from 'react'
 import { useRouter } from 'next/navigation'
 import { CircleHelp, Download, Zap, AlertCircle, ArrowRight } from 'lucide-react'
-import { PieChart, Pie, Cell, ResponsiveContainer, Tooltip } from 'recharts'
+import {
+  PieChart,
+  Pie,
+  Cell,
+  ResponsiveContainer,
+  Tooltip,
+  BarChart,
+  Bar,
+  XAxis,
+  YAxis,
+  CartesianGrid,
+  ReferenceLine,
+} from 'recharts'
 import { useAppState } from '@/lib/store'
 import { optimizeBudget } from '@/lib/api'
+import { exportToCSV } from '@/lib/utils'
 
 const chartColors = ['var(--chart-1)', 'var(--chart-2)', 'var(--chart-3)', 'var(--chart-4)', 'var(--chart-5)']
 
@@ -103,6 +116,36 @@ export default function OptimizationPage() {
         return { channel, current, optimal, change }
       })
     : []
+
+  // Waterfall chart data
+  const waterfallData = changes.map((ch, i) => ({
+    name: ch.channel,
+    value: ch.optimal - ch.current,
+    fill: ch.change > 0 ? 'var(--success)' : 'var(--error)',
+  }))
+
+  // Handle export optimized plan
+  const handleExportOptimization = () => {
+    if (!optimization) return
+    const exportData = changes.map(ch => ({
+      Channel: ch.channel,
+      'Current Spend': ch.current,
+      'Optimal Spend': ch.optimal,
+      'Change (%)': ch.change.toFixed(2),
+      'Change ($)': ch.optimal - ch.current,
+    }))
+
+    // Add summary row
+    exportData.push({
+      Channel: 'TOTAL',
+      'Current Spend': Object.values(optimization.currentSpend).reduce((a, b) => a + b, 0),
+      'Optimal Spend': Object.values(optimization.optimalSpend).reduce((a, b) => a + b, 0),
+      'Change (%)': optimization.expectedLift?.lift_pct.toFixed(2) || '0',
+      'Change ($)': 0,
+    })
+
+    exportToCSV(exportData, 'mmm_optimized_budget')
+  }
 
   return (
     <div className="flex flex-col h-screen">
@@ -239,6 +282,52 @@ export default function OptimizationPage() {
                 ))}
               </div>
             </div>
+
+            {/* Waterfall Chart - Budget Changes */}
+            {waterfallData.length > 0 && (
+              <div className="p-5 rounded-xl bg-card border border-border space-y-4">
+                <h3 className="font-semibold text-foreground">Budget Reallocation</h3>
+                <p className="text-xs text-foreground-muted">Change from current to optimal allocation</p>
+                <div className="h-[200px]">
+                  <ResponsiveContainer width="100%" height="100%">
+                    <BarChart data={waterfallData}>
+                      <CartesianGrid strokeDasharray="3 3" stroke="var(--border)" />
+                      <XAxis
+                        dataKey="name"
+                        stroke="var(--foreground-muted)"
+                        fontSize={11}
+                        tickLine={false}
+                      />
+                      <YAxis
+                        stroke="var(--foreground-muted)"
+                        fontSize={11}
+                        tickFormatter={(v) => `$${(v / 1000).toFixed(0)}k`}
+                      />
+                      <Tooltip
+                        contentStyle={{
+                          backgroundColor: 'var(--card)',
+                          border: '1px solid var(--border)',
+                          borderRadius: '8px',
+                        }}
+                        formatter={(value: number) => [
+                          `${value > 0 ? '+' : ''}$${(value / 1000).toFixed(0)}k`,
+                          'Change',
+                        ]}
+                      />
+                      <ReferenceLine y={0} stroke="var(--foreground-muted)" />
+                      <Bar
+                        dataKey="value"
+                        radius={[4, 4, 0, 0]}
+                      >
+                        {waterfallData.map((entry, index) => (
+                          <Cell key={`cell-${index}`} fill={entry.fill} />
+                        ))}
+                      </Bar>
+                    </BarChart>
+                  </ResponsiveContainer>
+                </div>
+              </div>
+            )}
           </div>
 
           {/* Right Column */}
@@ -315,7 +404,10 @@ export default function OptimizationPage() {
                     </div>
                   ))}
                 </div>
-                <button className="w-full flex items-center justify-center gap-2 px-4 py-2.5 border border-border rounded-lg text-foreground-muted hover:text-foreground hover:bg-card-hover transition-colors">
+                <button
+                  onClick={handleExportOptimization}
+                  className="w-full flex items-center justify-center gap-2 px-4 py-2.5 border border-border rounded-lg text-foreground-muted hover:text-foreground hover:bg-card-hover transition-colors"
+                >
                   <Download className="w-4 h-4" />
                   Export Optimized Plan
                 </button>

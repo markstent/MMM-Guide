@@ -3,8 +3,22 @@
 import { useState, useEffect } from 'react'
 import { useRouter } from 'next/navigation'
 import { CircleHelp, RotateCcw, Save, Download, AlertCircle, Trash2 } from 'lucide-react'
+import {
+  BarChart,
+  Bar,
+  XAxis,
+  YAxis,
+  CartesianGrid,
+  Tooltip,
+  ResponsiveContainer,
+  Legend,
+  ComposedChart,
+  Area,
+  Line,
+} from 'recharts'
 import { useAppState } from '@/lib/store'
 import { createScenario, getScenarios } from '@/lib/api'
+import { exportToCSV, exportToJSON } from '@/lib/utils'
 
 const chartColors = ['var(--chart-1)', 'var(--chart-2)', 'var(--chart-3)', 'var(--chart-4)', 'var(--chart-5)']
 
@@ -146,6 +160,67 @@ export default function ScenariosPage() {
   })
 
   const maxSpend = Math.max(...channels.map(c => c.baseline)) * 2
+
+  // Multi-scenario comparison chart data
+  const comparisonData = [
+    {
+      name: 'Baseline',
+      sales: baselineTotalSales,
+      spend: baselineTotalSpend,
+      // Confidence bands (10% uncertainty)
+      salesLower: baselineTotalSales * 0.9,
+      salesUpper: baselineTotalSales * 1.1,
+    },
+    {
+      name: 'Current',
+      sales: projectedResults?.expected_sales || 0,
+      spend: currentTotalSpend,
+      salesLower: (projectedResults?.expected_sales || 0) * 0.85,
+      salesUpper: (projectedResults?.expected_sales || 0) * 1.15,
+    },
+    ...scenarios.map(s => ({
+      name: s.name,
+      sales: s.projected_sales,
+      spend: s.total_spend,
+      salesLower: s.projected_sales * 0.85,
+      salesUpper: s.projected_sales * 1.15,
+    })),
+  ]
+
+  // Handle export report
+  const handleExportReport = () => {
+    // Export scenarios comparison as CSV
+    const exportData = comparisonData.map(d => ({
+      Scenario: d.name,
+      'Total Spend': d.spend,
+      'Projected Sales': d.sales,
+      'Sales (Lower Bound)': d.salesLower,
+      'Sales (Upper Bound)': d.salesUpper,
+      ROI: d.spend > 0 ? (d.sales / d.spend).toFixed(2) : 0,
+    }))
+    exportToCSV(exportData, 'mmm_scenarios_comparison')
+  }
+
+  // Handle export full report as JSON
+  const handleExportFullReport = () => {
+    const fullReport = {
+      generated_at: new Date().toISOString(),
+      baseline: {
+        total_spend: baselineTotalSpend,
+        total_sales: baselineTotalSales,
+        channels: results.roi,
+      },
+      current_scenario: {
+        spend_allocation: spendAllocation,
+        total_spend: currentTotalSpend,
+        expected_sales: projectedResults?.expected_sales,
+        roi: projectedResults?.roi,
+      },
+      saved_scenarios: scenarios,
+      elasticities: results.elasticities,
+    }
+    exportToJSON(fullReport, 'mmm_full_report')
+  }
 
   return (
     <div className="flex flex-col h-screen">
@@ -346,12 +421,95 @@ export default function ScenariosPage() {
             </div>
 
             {/* Export */}
-            <button className="w-full flex items-center justify-center gap-2 px-4 py-3 border border-border rounded-lg text-foreground hover:bg-card-hover transition-colors">
-              <Download className="w-4 h-4" />
-              <span className="font-medium">Export Report</span>
-            </button>
+            <div className="space-y-2">
+              <button
+                onClick={handleExportReport}
+                className="w-full flex items-center justify-center gap-2 px-4 py-3 border border-border rounded-lg text-foreground hover:bg-card-hover transition-colors"
+              >
+                <Download className="w-4 h-4" />
+                <span className="font-medium">Export CSV</span>
+              </button>
+              <button
+                onClick={handleExportFullReport}
+                className="w-full flex items-center justify-center gap-2 px-4 py-2 text-foreground-muted text-sm hover:text-foreground transition-colors"
+              >
+                <Download className="w-3.5 h-3.5" />
+                <span>Export Full Report (JSON)</span>
+              </button>
+            </div>
           </div>
         </div>
+
+        {/* Scenario Comparison Chart */}
+        {comparisonData.length > 1 && (
+          <div className="mt-6 p-5 rounded-xl bg-card border border-border space-y-4">
+            <h3 className="font-semibold text-foreground">Scenario Comparison</h3>
+            <p className="text-xs text-foreground-muted">Projected sales with 85-115% confidence bands</p>
+            <div className="h-[280px]">
+              <ResponsiveContainer width="100%" height="100%">
+                <ComposedChart data={comparisonData}>
+                  <CartesianGrid strokeDasharray="3 3" stroke="var(--border)" />
+                  <XAxis
+                    dataKey="name"
+                    stroke="var(--foreground-muted)"
+                    fontSize={12}
+                  />
+                  <YAxis
+                    stroke="var(--foreground-muted)"
+                    fontSize={12}
+                    tickFormatter={(v) => `$${(v / 1000000).toFixed(1)}M`}
+                  />
+                  <Tooltip
+                    contentStyle={{
+                      backgroundColor: 'var(--card)',
+                      border: '1px solid var(--border)',
+                      borderRadius: '8px',
+                    }}
+                    formatter={(value: number, name: string) => {
+                      if (name === 'salesLower' || name === 'salesUpper') return null
+                      return [`$${(value / 1000000).toFixed(2)}M`, name === 'sales' ? 'Sales' : 'Spend']
+                    }}
+                  />
+                  <Legend />
+                  {/* Confidence band as area */}
+                  <Area
+                    type="monotone"
+                    dataKey="salesUpper"
+                    fill="var(--chart-1)"
+                    fillOpacity={0.1}
+                    stroke="none"
+                    name="Upper Bound"
+                    stackId="confidence"
+                  />
+                  <Area
+                    type="monotone"
+                    dataKey="salesLower"
+                    fill="var(--background)"
+                    fillOpacity={1}
+                    stroke="none"
+                    name="Lower Bound"
+                    stackId="confidence"
+                  />
+                  <Bar
+                    dataKey="sales"
+                    fill="var(--chart-1)"
+                    name="Projected Sales"
+                    radius={[4, 4, 0, 0]}
+                    barSize={40}
+                  />
+                  <Line
+                    type="monotone"
+                    dataKey="spend"
+                    stroke="var(--chart-2)"
+                    strokeWidth={2}
+                    name="Total Spend"
+                    dot={{ fill: 'var(--chart-2)', strokeWidth: 2 }}
+                  />
+                </ComposedChart>
+              </ResponsiveContainer>
+            </div>
+          </div>
+        )}
       </div>
     </div>
   )

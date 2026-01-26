@@ -1,5 +1,6 @@
 'use client'
 
+import { useState, useEffect } from 'react'
 import { usePathname } from 'next/navigation'
 import Link from 'next/link'
 import {
@@ -11,6 +12,8 @@ import {
   BarChart3,
   PieChart,
   GitBranch,
+  Moon,
+  Sun,
 } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { useAppState } from '@/lib/store'
@@ -29,6 +32,33 @@ const navItems = [
 export function Sidebar() {
   const pathname = usePathname()
   const { currentStep, data } = useAppState()
+  const [darkMode, setDarkMode] = useState(true)
+
+  // Initialize dark mode from localStorage or system preference
+  useEffect(() => {
+    const stored = localStorage.getItem('mmm-dark-mode')
+    if (stored !== null) {
+      setDarkMode(stored === 'true')
+    } else {
+      // Default to dark mode, or check system preference
+      const prefersDark = window.matchMedia('(prefers-color-scheme: dark)').matches
+      setDarkMode(prefersDark)
+    }
+  }, [])
+
+  // Apply dark mode class to document
+  useEffect(() => {
+    if (darkMode) {
+      document.documentElement.classList.add('dark')
+    } else {
+      document.documentElement.classList.remove('dark')
+    }
+    localStorage.setItem('mmm-dark-mode', String(darkMode))
+  }, [darkMode])
+
+  const toggleDarkMode = () => {
+    setDarkMode(prev => !prev)
+  }
 
   // Calculate progress based on what's completed
   const progress = (currentStep / 8) * 100
@@ -125,16 +155,49 @@ export function Sidebar() {
       </nav>
 
       {/* Footer */}
-      <div className="p-4 border-t border-border space-y-2">
-        <div className="text-xs text-foreground-subtle">Workflow Progress</div>
-        <div className="flex items-center gap-2">
-          <div className="flex-1 h-1.5 bg-border rounded-full overflow-hidden">
+      <div className="p-4 border-t border-border space-y-3">
+        {/* Dark Mode Toggle */}
+        <button
+          onClick={toggleDarkMode}
+          className="w-full flex items-center justify-between px-3 py-2 rounded-lg hover:bg-card-hover transition-colors"
+        >
+          <div className="flex items-center gap-2">
+            {darkMode ? (
+              <Moon className="w-4 h-4 text-foreground-muted" />
+            ) : (
+              <Sun className="w-4 h-4 text-foreground-muted" />
+            )}
+            <span className="text-sm text-foreground-muted">
+              {darkMode ? 'Dark Mode' : 'Light Mode'}
+            </span>
+          </div>
+          <div
+            className={cn(
+              'w-9 h-5 rounded-full transition-colors relative',
+              darkMode ? 'bg-primary' : 'bg-border'
+            )}
+          >
             <div
-              className="h-full bg-primary rounded-full transition-all duration-300"
-              style={{ width: `${progress}%` }}
+              className={cn(
+                'absolute top-0.5 w-4 h-4 bg-white rounded-full transition-all',
+                darkMode ? 'left-[18px]' : 'left-0.5'
+              )}
             />
           </div>
-          <span className="text-xs text-foreground-muted">Step {currentStep} of 8</span>
+        </button>
+
+        {/* Progress */}
+        <div className="space-y-2">
+          <div className="text-xs text-foreground-subtle">Workflow Progress</div>
+          <div className="flex items-center gap-2">
+            <div className="flex-1 h-1.5 bg-border rounded-full overflow-hidden">
+              <div
+                className="h-full bg-primary rounded-full transition-all duration-300"
+                style={{ width: `${progress}%` }}
+              />
+            </div>
+            <span className="text-xs text-foreground-muted">Step {currentStep} of 8</span>
+          </div>
         </div>
       </div>
     </div>

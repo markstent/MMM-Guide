@@ -44,6 +44,7 @@ interface ResultsState {
     ess_min: number
     divergences: number
   } | null
+  decomposition?: { date: string; actual: number; baseline: number; [channel: string]: number | string }[]
 }
 
 interface OptimizationState {
