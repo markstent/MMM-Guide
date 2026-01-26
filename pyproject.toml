@@ -32,6 +32,10 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+dashboard = [
+    "streamlit>=1.30.0",
+    "streamlit-option-menu>=0.3.6",
+]
 dev = [
     "black>=23.0.0",
     "ruff>=0.1.0",
