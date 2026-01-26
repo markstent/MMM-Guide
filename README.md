@@ -1,6 +1,6 @@
 # Marketing Mix Modelling - Complete Example
 
-A practical implementation of Marketing Mix Modelling (MMM) using Bayesian methods, based on the concepts from [Marketing Mix Modelling: The Complete Guide](MMM_Complete_Guide_v6.docx) by Mark Stent.
+A practical implementation of Marketing Mix Modelling (MMM) using Bayesian methods, based on the concepts from [Marketing Mix Modelling: The Complete Guide](MMM_Complete_Guide_v7.docx) by Mark Stent.
 
 ## About This Project
 
@@ -8,9 +8,21 @@ The accompanying guide was written to incorporate as many MMM concepts as possib
 
 - **Not exhaustive**: The guide doesn't cover every aspect of MMM - it's a comprehensive starting point, not the final word
 - **Bayesian focus**: This implementation uses Bayesian methods exclusively. There are other valid approaches (frequentist regression, machine learning methods, etc.) that are not covered here
-- **One implementation**: This notebook represents just one way to build an MMM. Different datasets, business contexts, and objectives may require different modelling choices
+- **Two implementations**: This repository includes both additive and multiplicative model specifications, demonstrating different approaches to MMM
 
 The goal is to provide a solid foundation for understanding and implementing Bayesian MMM, which you can then adapt to your specific needs.
+
+## Notebooks
+
+| Notebook | Model Type | Description |
+|----------|------------|-------------|
+| `mmm_complete_example.ipynb` | **Additive** | Standard MMM: `Sales = Baseline + Media_Effects + Controls` |
+| `mmm_multiplicative_example.ipynb` | **Multiplicative** | Log-log and lift-factor models with Shapley decomposition |
+
+### When to Use Each
+
+- **Additive Model**: Simpler interpretation, straightforward decomposition, works well for most cases
+- **Multiplicative Model**: Better when channels interact strongly, coefficients are elasticities, requires Shapley values for attribution
 
 ## Dataset
 
@@ -18,7 +30,7 @@ This project uses the [Multi-Region Marketing Mix Modeling Dataset](https://figs
 
 ## Topics Covered
 
-The notebook (`mmm_complete_example.ipynb`) demonstrates:
+### Additive Model (`mmm_complete_example.ipynb`)
 
 ### Part I: Data Foundations
 - Loading and exploring marketing data
@@ -68,6 +80,23 @@ The notebook (`mmm_complete_example.ipynb`) demonstrates:
 - Optimal budget allocation
 - Constraint handling
 
+### Multiplicative Model (`mmm_multiplicative_example.ipynb`)
+
+Covers the same data preparation as the additive model, plus:
+
+- **Log-Log Specification**: Elasticity-based model where coefficients represent % change
+- **Lift-Factor Specification**: Multiplicative lifts from baseline with natural interactions
+- **Shapley Value Decomposition**: Fair attribution for multiplicative models
+- **Model Comparison**: Side-by-side comparison of both multiplicative approaches
+- **Budget Optimization**: Allocation optimization using elasticities
+
+Key differences from additive:
+```
+Additive:       Sales = Baseline + b1*X1 + b2*X2
+Log-Log:        log(Sales) = a + b1*log(X1) + b2*log(X2)
+Lift-Factor:    Sales = Baseline * (1 + lift_1) * (1 + lift_2)
+```
+
 ## Setup
 
 ### Prerequisites
@@ -105,9 +134,18 @@ Key packages used:
 
 ## Key Concepts
 
-### The MMM Equation
+### The MMM Equation (Additive)
 ```
 Sales = Baseline + Trend + Seasonality + Media_Effects + Noise
+```
+
+### The MMM Equation (Multiplicative)
+```
+Sales = Baseline * (1 + TV_lift) * (1 + Digital_lift) * Seasonality * exp(Noise)
+```
+Or in log-log form:
+```
+log(Sales) = alpha + elasticity_TV * log(TV) + elasticity_Digital * log(Digital) + ...
 ```
 
 ### Adstock Transformation
@@ -128,7 +166,7 @@ Where:
 
 ## References
 
-- Mark Stent, [Marketing Mix Modelling: The Complete Guide](MMM_Complete_Guide_v6.docx)
+- Mark Stent, [Marketing Mix Modelling: The Complete Guide](MMM_Complete_Guide_v7.docx)
 - [Figshare Dataset](https://figshare.com/articles/dataset/Multi-Region_Marketing_Mix_Modeling_MMM_Dataset_for_Several_eCommerce_Brands/25314841)
 - [PyMC Documentation](https://www.pymc.io/)
 - [PyMC-Marketing Documentation](https://www.pymc-marketing.io/)
