@@ -25,7 +25,6 @@ interface ExplorationData {
   }
   column_stats: Record<string, ColumnStats>
   correlations: Record<string, Record<string, number>>
-  time_series: { date: string; value: number }[]
 }
 
 export default function DataExplorationPage() {
@@ -175,88 +174,54 @@ export default function DataExplorationPage() {
               ))}
             </div>
 
-            {/* Charts Row */}
-            <div className="grid grid-cols-2 gap-6">
-              <div className="p-5 rounded-xl bg-card border border-border">
-                <h3 className="font-semibold text-foreground mb-4">Channel Correlation Matrix</h3>
-                <div className="h-[280px] overflow-auto">
-                  {correlationChannels.length > 0 ? (
-                    <table className="w-full text-xs">
-                      <thead>
-                        <tr>
-                          <th className="p-1"></th>
-                          {correlationChannels.map(ch => (
-                            <th key={ch} className="p-1 text-foreground-muted font-medium truncate max-w-[80px]" title={ch}>
-                              {ch.slice(0, 8)}
-                            </th>
-                          ))}
-                        </tr>
-                      </thead>
-                      <tbody>
-                        {correlationChannels.map(row => (
-                          <tr key={row}>
-                            <td className="p-1 text-foreground-muted font-medium truncate max-w-[80px]" title={row}>
-                              {row.slice(0, 8)}
-                            </td>
-                            {correlationChannels.map(col => {
-                              const value = explorationData.correlations[row]?.[col] ?? 0
-                              const intensity = Math.abs(value)
-                              const color = value > 0
-                                ? `rgba(34, 197, 94, ${intensity})`
-                                : `rgba(239, 68, 68, ${intensity})`
-                              return (
-                                <td
-                                  key={col}
-                                  className="p-1 text-center"
-                                  style={{ backgroundColor: color }}
-                                  title={`${row} vs ${col}: ${value.toFixed(2)}`}
-                                >
-                                  {value.toFixed(2)}
-                                </td>
-                              )
-                            })}
-                          </tr>
+            {/* Correlation Matrix */}
+            <div className="p-5 rounded-xl bg-card border border-border">
+              <h3 className="font-semibold text-foreground mb-4">Media Channel Correlation Matrix</h3>
+              <div className="h-[280px] overflow-auto">
+                {correlationChannels.length > 0 ? (
+                  <table className="w-full text-xs">
+                    <thead>
+                      <tr>
+                        <th className="p-1"></th>
+                        {correlationChannels.map(ch => (
+                          <th key={ch} className="p-1 text-foreground-muted font-medium truncate max-w-[80px]" title={ch}>
+                            {ch.slice(0, 8)}
+                          </th>
                         ))}
-                      </tbody>
-                    </table>
-                  ) : (
-                    <div className="h-full flex items-center justify-center text-foreground-muted">
-                      No correlation data available
-                    </div>
-                  )}
-                </div>
-              </div>
-              <div className="p-5 rounded-xl bg-card border border-border">
-                <div className="flex items-center justify-between mb-4">
-                  <h3 className="font-semibold text-foreground">Sales Over Time</h3>
-                </div>
-                <div className="h-[280px]">
-                  {explorationData.time_series && explorationData.time_series.length > 0 ? (
-                    <div className="h-full flex flex-col">
-                      <div className="flex-1 flex items-end gap-[2px]">
-                        {explorationData.time_series.slice(-50).map((point, i) => {
-                          const maxValue = Math.max(...explorationData.time_series.map(p => p.value))
-                          const height = (point.value / maxValue) * 100
-                          return (
-                            <div
-                              key={i}
-                              className="flex-1 bg-chart-1 rounded-t"
-                              style={{ height: `${height}%` }}
-                              title={`${point.date}: ${formatValue(point.value)}`}
-                            />
-                          )
-                        })}
-                      </div>
-                      <div className="mt-2 text-xs text-foreground-muted text-center">
-                        Showing last 50 periods
-                      </div>
-                    </div>
-                  ) : (
-                    <div className="h-full flex items-center justify-center text-foreground-muted">
-                      No time series data available
-                    </div>
-                  )}
-                </div>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {correlationChannels.map(row => (
+                        <tr key={row}>
+                          <td className="p-1 text-foreground-muted font-medium truncate max-w-[80px]" title={row}>
+                            {row.slice(0, 8)}
+                          </td>
+                          {correlationChannels.map(col => {
+                            const value = explorationData.correlations[row]?.[col] ?? 0
+                            const intensity = Math.abs(value)
+                            const color = value > 0
+                              ? `rgba(34, 197, 94, ${intensity})`
+                              : `rgba(239, 68, 68, ${intensity})`
+                            return (
+                              <td
+                                key={col}
+                                className="p-1 text-center"
+                                style={{ backgroundColor: color }}
+                                title={`${row} vs ${col}: ${value.toFixed(2)}`}
+                              >
+                                {value.toFixed(2)}
+                              </td>
+                            )
+                          })}
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                ) : (
+                  <div className="h-full flex items-center justify-center text-foreground-muted">
+                    No correlation data available
+                  </div>
+                )}
               </div>
             </div>
 
