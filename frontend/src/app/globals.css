@@ -1,0 +1,76 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  /* Background colors */
+  --background: #0F172A;
+  --background-secondary: #1E293B;
+
+  /* Text colors */
+  --foreground: #F1F5F9;
+  --foreground-muted: #94A3B8;
+  --foreground-subtle: #64748B;
+
+  /* Border colors */
+  --border: #334155;
+  --border-subtle: #1E293B;
+
+  /* Card colors */
+  --card: #1E293B;
+  --card-hover: #334155;
+
+  /* Primary colors */
+  --primary: #4F46E5;
+  --primary-hover: #6366F1;
+  --primary-foreground: #FFFFFF;
+
+  /* Semantic colors */
+  --success: #10B981;
+  --success-muted: #065F46;
+  --warning: #F59E0B;
+  --warning-muted: #78350F;
+  --error: #EF4444;
+  --error-muted: #7F1D1D;
+  --info: #3B82F6;
+  --info-muted: #1E3A8A;
+
+  /* Chart colors */
+  --chart-1: #4F46E5;
+  --chart-2: #06B6D4;
+  --chart-3: #10B981;
+  --chart-4: #F59E0B;
+  --chart-5: #EC4899;
+  --chart-6: #8B5CF6;
+
+  /* Border radius */
+  --radius-sm: 4px;
+  --radius-md: 8px;
+  --radius-lg: 12px;
+  --radius-xl: 16px;
+}
+
+body {
+  color: var(--foreground);
+  background: var(--background);
+  font-family: 'Inter', system-ui, sans-serif;
+}
+
+/* Custom scrollbar */
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+
+::-webkit-scrollbar-track {
+  background: var(--background-secondary);
+}
+
+::-webkit-scrollbar-thumb {
+  background: var(--border);
+  border-radius: 4px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: var(--foreground-subtle);
+}
