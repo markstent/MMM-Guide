@@ -23,6 +23,8 @@ def clean_for_json(obj):
         return {k: clean_for_json(v) for k, v in obj.items()}
     elif isinstance(obj, list):
         return [clean_for_json(v) for v in obj]
+    elif isinstance(obj, (bool, np.bool_)):
+        return bool(obj)
     elif isinstance(obj, float):
         if np.isnan(obj) or np.isinf(obj):
             return None
@@ -354,21 +356,50 @@ async def train_model():
     if 'mapping' not in session_data:
         raise HTTPException(status_code=400, detail="Column mapping not set")
 
-    df = session_data['df']
+    df = session_data['df'].copy()
     mapping = session_data['mapping']
     config = session_data.get('model_config', ModelConfig().dict())
 
     try:
+        # Preprocess data - aggregate by date
+        date_col = mapping['date_col']
+        target_col = mapping['target_col']
+        media_cols = mapping['media_cols']
+
+        # Convert date column
+        df[date_col] = pd.to_datetime(df[date_col])
+
+        # Aggregate by date (sum target and media spend)
+        agg_cols = {target_col: 'sum'}
+        for col in media_cols:
+            agg_cols[col] = 'sum'
+
+        df_agg = df.groupby(date_col).agg(agg_cols).reset_index()
+        df_agg = df_agg.sort_values(date_col)
+
+        # Drop rows with NaN in target or any media column
+        df_agg = df_agg.dropna(subset=[target_col] + media_cols)
+
+        # Ensure no zeros in target (for log transform)
+        df_agg = df_agg[df_agg[target_col] > 0]
+
+        # Also ensure no zeros in media (add small constant)
+        for col in media_cols:
+            df_agg[col] = df_agg[col].clip(lower=1)
+
+        # Store aggregated data
+        session_data['df_agg'] = df_agg
+
         # Extract data
-        y = df[mapping['target_col']].values
-        X_media = df[mapping['media_cols']].values
+        y = df_agg[target_col].values
+        X_media = df_agg[media_cols].values
 
         # Create trend
-        trend = np.arange(len(df)) / len(df)
+        trend = np.arange(len(df_agg)) / len(df_agg)
 
         # Create Fourier features
         X_fourier = create_fourier_features(
-            len(df),
+            len(df_agg),
             period=config['seasonality_period'],
             harmonics=config['fourier_harmonics'],
         )
@@ -380,7 +411,7 @@ async def train_model():
                 X_fourier=X_fourier,
                 trend=trend,
                 y=y,
-                channel_names=mapping['media_cols'],
+                channel_names=media_cols,
             )
         else:
             model = build_lift_model(
@@ -388,7 +419,7 @@ async def train_model():
                 X_fourier=X_fourier,
                 trend=trend,
                 y=y,
-                channel_names=mapping['media_cols'],
+                channel_names=media_cols,
             )
 
         # Fit model
@@ -404,15 +435,16 @@ async def train_model():
         session_data['trace'] = trace
         session_data['y'] = y
         session_data['X_media'] = X_media
+        session_data['media_cols'] = media_cols
 
         # Compute diagnostics
         diagnostics = compute_model_diagnostics(trace)
 
-        return {
+        return clean_for_json({
             "success": True,
             "diagnostics": diagnostics,
             "converged": diagnostics['converged'],
-        }
+        })
 
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
