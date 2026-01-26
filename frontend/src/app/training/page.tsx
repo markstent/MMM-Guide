@@ -57,6 +57,8 @@ export default function TrainingPage() {
           setChainProgress([100, 100, 100, 100])
           setStatus('success')
 
+          const trainData = result.data as any
+
           // Fetch results
           const resultsResponse = await getModelResults()
           if (resultsResponse.success && resultsResponse.data) {
@@ -67,10 +69,10 @@ export default function TrainingPage() {
               elasticities: data.elasticities,
               roi: data.roi,
               diagnostics: {
-                converged: result.data.converged,
-                rhat_max: result.data.diagnostics?.rhat_max || 1.0,
-                ess_min: result.data.diagnostics?.ess_min || 1000,
-                divergences: result.data.diagnostics?.divergences || 0,
+                converged: trainData.converged,
+                rhat_max: trainData.diagnostics?.rhat_max || 1.0,
+                ess_min: trainData.diagnostics?.ess_min || 1000,
+                divergences: trainData.diagnostics?.divergences || 0,
               },
             })
           }
