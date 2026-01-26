@@ -243,25 +243,80 @@ async def explore_data():
         raise HTTPException(status_code=400, detail="No data loaded")
 
     df = session_data['df']
+    mapping = session_data.get('mapping', {})
 
     # Basic stats
     numeric_cols = df.select_dtypes(include=[np.number]).columns.tolist()
-    stats = df[numeric_cols].describe().to_dict()
+
+    # Get date range
+    date_col = mapping.get('date_col')
+    date_range = None
+    if date_col and date_col in df.columns:
+        try:
+            dates = pd.to_datetime(df[date_col])
+            date_range = {
+                "start": dates.min().strftime('%Y-%m-%d'),
+                "end": dates.max().strftime('%Y-%m-%d'),
+            }
+        except Exception:
+            pass
+
+    # Calculate missing percentage
+    total_cells = df.size
+    missing_cells = df.isna().sum().sum()
+    missing_pct = (missing_cells / total_cells) * 100 if total_cells > 0 else 0
+
+    # Summary stats
+    summary = {
+        "rows": len(df),
+        "columns": len(df.columns),
+        "date_range": date_range,
+        "missing_pct": missing_pct,
+    }
+
+    # Column stats
+    column_stats = {}
+    for col in df.columns:
+        stats = {
+            "dtype": str(df[col].dtype),
+            "non_null": int(df[col].notna().sum()),
+            "null_count": int(df[col].isna().sum()),
+        }
+        if pd.api.types.is_numeric_dtype(df[col]):
+            stats["mean"] = float(df[col].mean()) if not df[col].isna().all() else None
+            stats["std"] = float(df[col].std()) if not df[col].isna().all() else None
+            stats["min"] = float(df[col].min()) if not df[col].isna().all() else None
+            stats["max"] = float(df[col].max()) if not df[col].isna().all() else None
+        column_stats[col] = stats
 
     # Correlation matrix for numeric columns
+    correlations = {}
     if len(numeric_cols) > 1:
-        corr = df[numeric_cols].corr().to_dict()
-    else:
-        corr = {}
+        corr_df = df[numeric_cols].corr()
+        for col in numeric_cols:
+            correlations[col] = {c: corr_df.loc[col, c] for c in numeric_cols}
 
-    # Missing values
-    missing = df.isna().sum().to_dict()
+    # Time series data (target variable over time)
+    time_series = []
+    target_col = mapping.get('target_col')
+    if date_col and target_col and date_col in df.columns and target_col in df.columns:
+        try:
+            ts_df = df[[date_col, target_col]].copy()
+            ts_df[date_col] = pd.to_datetime(ts_df[date_col])
+            ts_df = ts_df.sort_values(date_col)
+            time_series = [
+                {"date": row[date_col].strftime('%Y-%m-%d'), "value": float(row[target_col])}
+                for _, row in ts_df.iterrows()
+                if pd.notna(row[target_col])
+            ]
+        except Exception:
+            pass
 
     return clean_for_json({
-        "stats": stats,
-        "correlation": corr,
-        "missing_values": missing,
-        "numeric_columns": numeric_cols,
+        "summary": summary,
+        "column_stats": column_stats,
+        "correlations": correlations,
+        "time_series": time_series,
     })
 
 
