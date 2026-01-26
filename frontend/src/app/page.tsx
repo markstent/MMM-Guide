@@ -1,21 +1,91 @@
 'use client'
 
-import { useState } from 'react'
-import { CloudUpload, FileSpreadsheet, CircleHelp } from 'lucide-react'
+import { useState, useCallback } from 'react'
+import { useRouter } from 'next/navigation'
+import { CloudUpload, FileSpreadsheet, CircleHelp, Loader2 } from 'lucide-react'
+import { uploadFile, loadSampleData } from '@/lib/api'
+import { useAppState } from '@/lib/store'
 
 export default function DataUploadPage() {
-  const [data, setData] = useState<string[][] | null>(null)
+  const router = useRouter()
+  const { data, setData, setCurrentStep } = useAppState()
+  const [isLoading, setIsLoading] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+  const [isDragging, setIsDragging] = useState(false)
 
-  const handleFileUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
+  const handleDataLoaded = useCallback((responseData: any) => {
+    setData({
+      filename: responseData.filename,
+      rows: responseData.rows,
+      columns: responseData.columns,
+      columnNames: responseData.column_names,
+      columnTypes: responseData.column_types,
+      preview: responseData.preview,
+    })
+    setCurrentStep(2)
+    setError(null)
+  }, [setData, setCurrentStep])
+
+  const handleFileUpload = async (file: File) => {
+    setIsLoading(true)
+    setError(null)
+
+    const result = await uploadFile(file)
+
+    if (result.success && result.data) {
+      handleDataLoaded(result.data)
+    } else {
+      setError(result.error || 'Upload failed')
+    }
+
+    setIsLoading(false)
+  }
+
+  const handleSampleData = async (sampleName: string) => {
+    setIsLoading(true)
+    setError(null)
+
+    const result = await loadSampleData(sampleName)
+
+    if (result.success && result.data) {
+      handleDataLoaded(result.data)
+    } else {
+      setError(result.error || 'Failed to load sample data')
+    }
+
+    setIsLoading(false)
+  }
+
+  const handleDrop = useCallback((e: React.DragEvent) => {
+    e.preventDefault()
+    setIsDragging(false)
+
+    const file = e.dataTransfer.files[0]
+    if (file) {
+      handleFileUpload(file)
+    }
+  }, [])
+
+  const handleDragOver = useCallback((e: React.DragEvent) => {
+    e.preventDefault()
+    setIsDragging(true)
+  }, [])
+
+  const handleDragLeave = useCallback((e: React.DragEvent) => {
+    e.preventDefault()
+    setIsDragging(false)
+  }, [])
+
+  const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0]
-    if (!file) return
-    // File handling logic would go here
+    if (file) {
+      handleFileUpload(file)
+    }
   }
 
   return (
     <div className="flex flex-col h-screen">
-      {/* Header */}
-      <header className="h-16 flex items-center justify-between px-8 border-b border-border">
+      <header className="h-16 flex items-center justify-between px-8 border-b border-border shrink-0">
         <div className="flex items-center gap-4">
           <h1 className="text-xl font-semibold text-foreground">Data Upload</h1>
           <span className="text-sm text-foreground-muted">/ Step 1 of 8</span>
@@ -26,7 +96,6 @@ export default function DataUploadPage() {
         </button>
       </header>
 
-      {/* Content */}
       <div className="flex-1 p-8 overflow-auto">
         <div className="max-w-6xl space-y-6">
           {/* Upload Section */}
@@ -38,59 +107,85 @@ export default function DataUploadPage() {
               </p>
             </div>
 
-            {/* Drop Zone */}
-            <label className="flex flex-col items-center justify-center w-full h-[200px] border-2 border-dashed border-border rounded-xl cursor-pointer hover:border-primary hover:bg-card/50 transition-colors">
-              <CloudUpload className="w-12 h-12 text-foreground-subtle mb-4" />
-              <span className="text-sm text-foreground-muted">
-                Drag and drop your file here, or click to browse
-              </span>
-              <span className="text-xs text-foreground-subtle mt-2">
-                Supports CSV, XLSX
-              </span>
+            {error && (
+              <div className="p-4 rounded-lg bg-error/10 border border-error text-error text-sm">
+                {error}
+              </div>
+            )}
+
+            <label
+              className={`flex flex-col items-center justify-center w-full h-[200px] border-2 border-dashed rounded-xl cursor-pointer transition-colors ${
+                isDragging
+                  ? 'border-primary bg-primary/10'
+                  : 'border-border hover:border-primary hover:bg-card/50'
+              }`}
+              onDrop={handleDrop}
+              onDragOver={handleDragOver}
+              onDragLeave={handleDragLeave}
+            >
+              {isLoading ? (
+                <Loader2 className="w-12 h-12 text-primary animate-spin" />
+              ) : (
+                <>
+                  <CloudUpload className="w-12 h-12 text-foreground-subtle mb-4" />
+                  <span className="text-sm text-foreground-muted">
+                    Drag and drop your file here, or click to browse
+                  </span>
+                  <span className="text-xs text-foreground-subtle mt-2">Supports CSV, XLSX</span>
+                </>
+              )}
               <input
                 type="file"
                 className="hidden"
                 accept=".csv,.xlsx,.xls"
-                onChange={handleFileUpload}
+                onChange={handleFileChange}
+                disabled={isLoading}
               />
             </label>
 
-            {/* OR divider */}
             <div className="flex items-center gap-4">
               <div className="flex-1 h-px bg-border" />
               <span className="text-xs text-foreground-subtle font-medium">OR</span>
               <div className="flex-1 h-px bg-border" />
             </div>
 
-            {/* Sample Data Cards */}
+            {/* Sample Data */}
             <div className="space-y-3">
               <p className="text-base font-medium text-foreground">Or use sample data to explore</p>
               <div className="grid grid-cols-2 gap-4">
-                <button className="flex items-start gap-4 p-4 rounded-xl bg-card border border-border hover:border-primary transition-colors text-left">
+                <button
+                  onClick={() => handleSampleData('conjura')}
+                  disabled={isLoading}
+                  className="flex items-start gap-4 p-4 rounded-xl bg-card border border-border hover:border-primary transition-colors text-left disabled:opacity-50"
+                >
                   <div className="w-10 h-10 rounded-lg bg-chart-1/20 flex items-center justify-center">
                     <FileSpreadsheet className="w-5 h-5 text-chart-1" />
                   </div>
                   <div>
                     <h3 className="font-medium text-foreground">Conjura MMM Dataset</h3>
                     <p className="text-sm text-foreground-muted mt-0.5">
-                      3 years of weekly data with 4 media channels.
+                      Real marketing data with multiple channels and territories.
                     </p>
                     <span className="inline-block mt-2 text-xs text-primary font-medium">
                       Load Sample
                     </span>
                   </div>
                 </button>
-                <button className="flex items-start gap-4 p-4 rounded-xl bg-card border border-border hover:border-primary transition-colors text-left">
+
+                <button
+                  disabled
+                  className="flex items-start gap-4 p-4 rounded-xl bg-card border border-border opacity-50 cursor-not-allowed text-left"
+                >
                   <div className="w-10 h-10 rounded-lg bg-chart-2/20 flex items-center justify-center">
                     <FileSpreadsheet className="w-5 h-5 text-chart-2" />
                   </div>
                   <div>
                     <h3 className="font-medium text-foreground">E-commerce Demo</h3>
                     <p className="text-sm text-foreground-muted mt-0.5">
-                      2 years of daily data with 6 media channels.
+                      Coming soon - 2 years of daily data with 6 media channels.
                     </p>
-                    <span className="inline-block mt-2 text-xs text-primary font-medium">
-                      Load Sample
+                    <span className="inline-block mt-2 text-xs text-foreground-subtle font-medium">
+                      Coming Soon
                     </span>
                   </div>
                 </button>
@@ -98,53 +193,72 @@ export default function DataUploadPage() {
             </div>
           </div>
 
-          {/* Preview Section */}
-          <div className="space-y-4">
-            <div className="flex items-center justify-between">
-              <h3 className="text-base font-medium text-foreground">Data Preview</h3>
-              <div className="flex items-center gap-4 text-sm">
-                <span className="text-foreground-muted">
-                  Rows: <span className="text-foreground font-medium">156</span>
-                </span>
-                <span className="text-foreground-muted">
-                  Columns: <span className="text-foreground font-medium">12</span>
-                </span>
-                <span className="text-foreground-muted">
-                  Date Range: <span className="text-foreground font-medium">Jan 2022 - Dec 2024</span>
-                </span>
+          {/* Data Preview */}
+          {data && (
+            <div className="space-y-4">
+              <div className="flex items-center justify-between">
+                <h3 className="text-base font-medium text-foreground">Data Preview</h3>
+                <div className="flex items-center gap-4 text-sm">
+                  <span className="text-foreground-muted">
+                    Rows: <span className="text-foreground font-medium">{data.rows.toLocaleString()}</span>
+                  </span>
+                  <span className="text-foreground-muted">
+                    Columns: <span className="text-foreground font-medium">{data.columns}</span>
+                  </span>
+                  <span className="text-foreground-muted">
+                    File: <span className="text-foreground font-medium">{data.filename}</span>
+                  </span>
+                </div>
               </div>
-            </div>
 
-            {/* Data Table */}
-            <div className="rounded-xl border border-border bg-card overflow-hidden">
-              <div className="overflow-x-auto">
-                <table className="w-full">
-                  <thead>
-                    <tr className="bg-background-secondary">
-                      <th className="px-4 h-11 text-left text-sm font-medium text-foreground-muted">date</th>
-                      <th className="px-4 h-11 text-left text-sm font-medium text-foreground-muted">revenue_eur_total</th>
-                      <th className="px-4 h-11 text-left text-sm font-medium text-foreground-muted">cost_appinstallcampaign_spend</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {[
-                      ['2020-01-05', '2245', '0.72'],
-                      ['2020-01-12', '3476', '0.51'],
-                      ['2020-01-19', '3469', '0.06'],
-                      ['2020-01-27', '2445', '0.07'],
-                      ['2022-01-14', '2653', '0.69'],
-                    ].map((row, i) => (
-                      <tr key={i} className="border-t border-border">
-                        <td className="px-4 h-10 text-sm text-foreground">{row[0]}</td>
-                        <td className="px-4 h-10 text-sm text-foreground">{row[1]}</td>
-                        <td className="px-4 h-10 text-sm text-foreground">{row[2]}</td>
+              <div className="rounded-xl border border-border bg-card overflow-hidden">
+                <div className="overflow-x-auto">
+                  <table className="w-full">
+                    <thead>
+                      <tr className="bg-background-secondary">
+                        {data.columnNames.slice(0, 6).map((col) => (
+                          <th
+                            key={col}
+                            className="px-4 h-11 text-left text-sm font-medium text-foreground-muted whitespace-nowrap"
+                          >
+                            {col}
+                          </th>
+                        ))}
+                        {data.columnNames.length > 6 && (
+                          <th className="px-4 h-11 text-left text-sm font-medium text-foreground-muted">
+                            +{data.columnNames.length - 6} more
+                          </th>
+                        )}
                       </tr>
-                    ))}
-                  </tbody>
-                </table>
+                    </thead>
+                    <tbody>
+                      {data.preview.slice(0, 5).map((row, i) => (
+                        <tr key={i} className="border-t border-border">
+                          {data.columnNames.slice(0, 6).map((col) => (
+                            <td key={col} className="px-4 h-10 text-sm text-foreground whitespace-nowrap">
+                              {String(row[col] ?? '')}
+                            </td>
+                          ))}
+                          {data.columnNames.length > 6 && (
+                            <td className="px-4 h-10 text-sm text-foreground-muted">...</td>
+                          )}
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+
+              <div className="flex justify-end">
+                <button
+                  onClick={() => router.push('/explore')}
+                  className="px-6 py-2.5 bg-primary text-white font-medium rounded-lg hover:bg-primary-hover transition-colors"
+                >
+                  Continue to Exploration
+                </button>
               </div>
             </div>
-          </div>
+          )}
         </div>
       </div>
     </div>
