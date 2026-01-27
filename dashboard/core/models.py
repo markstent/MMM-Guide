@@ -15,6 +15,10 @@ def build_loglog_model(
     trend: np.ndarray,
     y: np.ndarray,
     channel_names: List[str],
+    X_events: Optional[np.ndarray] = None,
+    event_names: Optional[List[str]] = None,
+    X_controls: Optional[np.ndarray] = None,
+    control_names: Optional[List[str]] = None,
     prior_config: Optional[Dict] = None,
 ) -> pm.Model:
     """
@@ -32,6 +36,10 @@ def build_loglog_model(
         trend: Trend feature, shape (n_periods,)
         y: Target variable, shape (n_periods,)
         channel_names: Names of media channels
+        X_events: Optional event indicators (e.g., COVID), shape (n_periods, n_events)
+        event_names: Names of events
+        X_controls: Optional control variables, shape (n_periods, n_controls)
+        control_names: Names of control variables
         prior_config: Optional dictionary of prior parameters
 
     Returns:
@@ -68,19 +76,50 @@ def build_loglog_model(
         )
 
         # Priors for seasonality coefficients
+        # sigma=0.5 allows seasonality to explain up to ~50% variation in log scale
         gamma_fourier = pm.Normal(
             "gamma_fourier",
             mu=0,
-            sigma=prior_config.get("fourier_sigma", 0.1),
+            sigma=prior_config.get("fourier_sigma", 0.5),
             dims="fourier",
         )
 
         # Prior for trend coefficient
+        # sigma=0.5 allows trend to capture meaningful growth/decline
         gamma_trend = pm.Normal(
             "gamma_trend",
             mu=0,
-            sigma=prior_config.get("trend_sigma", 0.1),
+            sigma=prior_config.get("trend_sigma", 0.5),
         )
+
+        # Priors for events (COVID, holidays, etc.) - can be positive or negative
+        gamma_events = None
+        n_events = 0
+        if X_events is not None and X_events.shape[1] > 0:
+            n_events = X_events.shape[1]
+            model.add_coord("event", event_names)
+            # Use pm.Data to wrap the events array for proper tensor handling
+            X_events_data = pm.Data("X_events_data", X_events)
+            gamma_events = pm.Normal(
+                "gamma_events",
+                mu=0,
+                sigma=prior_config.get("event_sigma", 1.0),
+                dims="event",
+            )
+
+        # Priors for control variables
+        gamma_controls = None
+        n_controls = 0
+        if X_controls is not None and X_controls.shape[1] > 0:
+            n_controls = X_controls.shape[1]
+            model.add_coord("control", control_names)
+            X_controls_data = pm.Data("X_controls_data", X_controls)
+            gamma_controls = pm.Normal(
+                "gamma_controls",
+                mu=0,
+                sigma=prior_config.get("control_sigma", 0.5),
+                dims="control",
+            )
 
         # Prior for noise
         sigma = pm.HalfNormal(
@@ -95,6 +134,14 @@ def build_loglog_model(
             + pm.math.dot(X_fourier, gamma_fourier)
             + gamma_trend * trend
         )
+
+        # Add events contribution (e.g., COVID impact)
+        if n_events > 0 and gamma_events is not None:
+            mu = mu + pm.math.dot(X_events_data, gamma_events)
+
+        # Add controls contribution (already standardized, no log transform)
+        if n_controls > 0 and gamma_controls is not None:
+            mu = mu + pm.math.dot(X_controls_data, gamma_controls)
 
         # Likelihood
         pm.Normal("y_obs", mu=mu, sigma=sigma, observed=y_log, dims="obs")
@@ -175,7 +222,7 @@ def build_lift_model(
         gamma_fourier = pm.Normal(
             "gamma_fourier",
             mu=0,
-            sigma=prior_config.get("fourier_sigma", 0.1),
+            sigma=prior_config.get("fourier_sigma", 0.5),
             dims="fourier",
         )
 
@@ -183,7 +230,7 @@ def build_lift_model(
         gamma_trend = pm.Normal(
             "gamma_trend",
             mu=0,
-            sigma=prior_config.get("trend_sigma", 0.05),
+            sigma=prior_config.get("trend_sigma", 0.5),
         )
 
         # Noise
