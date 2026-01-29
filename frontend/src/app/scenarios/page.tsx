@@ -2,34 +2,31 @@
 
 import { useState, useEffect } from 'react'
 import { useRouter } from 'next/navigation'
-import { CircleHelp, RotateCcw, Save, Download, AlertCircle, Trash2 } from 'lucide-react'
+import { CircleHelp, TrendingUp, X, Download, AlertCircle } from 'lucide-react'
 import {
-  BarChart,
-  Bar,
+  ComposedChart,
+  Line,
   XAxis,
   YAxis,
-  CartesianGrid,
-  Tooltip,
   ResponsiveContainer,
-  Legend,
-  ComposedChart,
-  Area,
-  Line,
+  ReferenceLine,
+  Tooltip,
 } from 'recharts'
 import { useAppState } from '@/lib/store'
-import { createScenario, getScenarios } from '@/lib/api'
+import { createScenario } from '@/lib/api'
 import { exportToCSV, exportToJSON } from '@/lib/utils'
 
 const chartColors = ['var(--chart-1)', 'var(--chart-2)', 'var(--chart-3)', 'var(--chart-4)', 'var(--chart-5)']
 
 export default function ScenariosPage() {
   const router = useRouter()
-  const { results, scenarios, addScenario } = useAppState()
+  const { results, scenarios, addScenario, optimization } = useAppState()
 
   const [scenarioName, setScenarioName] = useState('')
   const [spendAllocation, setSpendAllocation] = useState<Record<string, number>>({})
   const [isLoading, setIsLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  const [selectedChannel, setSelectedChannel] = useState<string | null>(null)
   const [projectedResults, setProjectedResults] = useState<{
     total_spend: number
     expected_sales: number
@@ -103,6 +100,12 @@ export default function ScenariosPage() {
     setSpendAllocation(allocation)
   }
 
+  const handleLoadOptimized = () => {
+    if (optimization?.optimalSpend) {
+      setSpendAllocation(optimization.optimalSpend)
+    }
+  }
+
   const handleSaveScenario = async () => {
     if (!scenarioName.trim()) {
       setError('Please enter a scenario name')
@@ -161,43 +164,62 @@ export default function ScenariosPage() {
 
   const maxSpend = Math.max(...channels.map(c => c.baseline)) * 2
 
-  // Multi-scenario comparison chart data
-  const comparisonData = [
-    {
-      name: 'Baseline',
-      sales: baselineTotalSales,
-      spend: baselineTotalSpend,
-      // Confidence bands (10% uncertainty)
-      salesLower: baselineTotalSales * 0.9,
-      salesUpper: baselineTotalSales * 1.1,
-    },
-    {
-      name: 'Current',
-      sales: projectedResults?.expected_sales || 0,
-      spend: currentTotalSpend,
-      salesLower: (projectedResults?.expected_sales || 0) * 0.85,
-      salesUpper: (projectedResults?.expected_sales || 0) * 1.15,
-    },
-    ...scenarios.map(s => ({
-      name: s.name,
-      sales: s.projected_sales,
-      spend: s.total_spend,
-      salesLower: s.projected_sales * 0.85,
-      salesUpper: s.projected_sales * 1.15,
-    })),
-  ]
+  // Check if current allocation matches historical
+  const isHistorical = results.roi.every(
+    r => Math.abs((spendAllocation[r.channel] || 0) - r.spend) < 1
+  )
+
+  // Check if current allocation matches the optimized allocation
+  const isCurrentOptimized = optimization?.optimalSpend &&
+    Object.keys(optimization.optimalSpend).every(
+      ch => Math.abs((spendAllocation[ch] || 0) - optimization.optimalSpend[ch]) < 1
+    )
+
+  const historicalRoi = baselineTotalSpend > 0 ? baselineTotalSales / baselineTotalSpend : 0
+
+  // Generate response curve data for selected channel
+  const generateResponseCurve = (channelName: string) => {
+    const channelData = results.roi.find(r => r.channel === channelName)
+    if (!channelData) return []
+
+    const elasticity = results.elasticities?.[channelName]?.mean || 0.1
+    const baseSpend = channelData.spend
+    const baseContribution = channelData.contribution
+    const points = []
+
+    // Generate points from 0 to 2x baseline spend
+    for (let i = 0; i <= 20; i++) {
+      const spend = (baseSpend * 2 * i) / 20
+      const spendRatio = spend / baseSpend
+      const response = baseContribution * Math.pow(spendRatio, elasticity)
+      points.push({ spend, response })
+    }
+
+    return points
+  }
 
   // Handle export report
   const handleExportReport = () => {
-    // Export scenarios comparison as CSV
-    const exportData = comparisonData.map(d => ({
-      Scenario: d.name,
-      'Total Spend': d.spend,
-      'Projected Sales': d.sales,
-      'Sales (Lower Bound)': d.salesLower,
-      'Sales (Upper Bound)': d.salesUpper,
-      ROI: d.spend > 0 ? (d.sales / d.spend).toFixed(2) : 0,
-    }))
+    const exportData = [
+      {
+        Scenario: 'Historical',
+        'Total Spend': baselineTotalSpend,
+        'Projected Sales': baselineTotalSales,
+        ROI: historicalRoi.toFixed(2),
+      },
+      {
+        Scenario: isCurrentOptimized ? 'Current (Optimized)' : 'Current',
+        'Total Spend': currentTotalSpend,
+        'Projected Sales': projectedResults?.expected_sales || 0,
+        ROI: projectedResults?.roi.toFixed(2) || '0',
+      },
+      ...scenarios.map(s => ({
+        Scenario: s.name,
+        'Total Spend': s.total_spend,
+        'Projected Sales': s.projected_sales,
+        ROI: (s.projected_sales / s.total_spend).toFixed(2),
+      })),
+    ]
     exportToCSV(exportData, 'mmm_scenarios_comparison')
   }
 
@@ -229,7 +251,7 @@ export default function ScenariosPage() {
           <h1 className="text-xl font-semibold text-foreground">Scenario Planning</h1>
           <span className="text-sm text-foreground-muted">/ Step 8 of 8</span>
         </div>
-        <button className="flex items-center gap-2 px-3.5 h-9 rounded-lg border border-border text-foreground-muted">
+        <button className="flex items-center gap-2 px-3.5 h-9 rounded-lg border border-border text-foreground-muted hover:bg-card-hover">
           <CircleHelp className="w-4 h-4" />
           <span className="text-sm">Help</span>
         </button>
@@ -242,44 +264,69 @@ export default function ScenariosPage() {
           </div>
         )}
 
-        <div className="grid grid-cols-3 gap-6">
-          {/* Left Column */}
-          <div className="col-span-2 space-y-6">
-            {/* Spend Adjustments */}
-            <div className="p-5 rounded-xl bg-card border border-border space-y-4">
-              <div className="flex items-center justify-between">
-                <h3 className="font-semibold text-foreground">Adjust Channel Spend</h3>
+        <div className="grid grid-cols-2 gap-6">
+          {/* Left Panel - Adjust Budget */}
+          <div className="space-y-6">
+            <div className="p-5 rounded-xl bg-card border border-border">
+              <h3 className="font-semibold text-foreground mb-4">Adjust Budget</h3>
+
+              {/* Budget Presets */}
+              <div className="flex gap-2 mb-4">
                 <button
                   onClick={handleReset}
-                  className="flex items-center gap-1.5 px-3 py-1.5 border border-border rounded-md text-foreground-muted text-xs hover:bg-card-hover"
+                  className={`px-3 py-1.5 rounded-md text-sm transition-colors ${
+                    isHistorical
+                      ? 'bg-primary text-white'
+                      : 'border border-border hover:bg-card-hover'
+                  }`}
                 >
-                  <RotateCcw className="w-3 h-3" />
-                  Reset
+                  Historical
                 </button>
+                {optimization?.optimalSpend && (
+                  <button
+                    onClick={handleLoadOptimized}
+                    className={`px-3 py-1.5 rounded-md text-sm transition-colors ${
+                      isCurrentOptimized
+                        ? 'bg-primary text-white'
+                        : 'border border-border hover:bg-card-hover'
+                    }`}
+                  >
+                    Optimized {optimization.expectedLift && `(+${optimization.expectedLift.lift_pct.toFixed(1)}%)`}
+                  </button>
+                )}
+                {!isHistorical && !isCurrentOptimized && (
+                  <span className="px-3 py-1.5 text-sm text-foreground-muted bg-background-secondary rounded-md">
+                    Custom
+                  </span>
+                )}
               </div>
-              <div className="space-y-4">
+
+              {/* Channel Sliders */}
+              <div className="space-y-0 divide-y divide-border">
                 {channels.map((ch) => (
-                  <div key={ch.name} className="space-y-2">
-                    <div className="flex items-center justify-between">
+                  <div key={ch.name} className="py-3 first:pt-0 last:pb-0">
+                    <div className="flex items-center justify-between mb-2">
                       <div className="flex items-center gap-2">
-                        <div className="w-2.5 h-2.5 rounded-full" style={{ backgroundColor: ch.color }} />
+                        <div className="w-2 h-2 rounded-full" style={{ backgroundColor: ch.color }} />
                         <span className="text-sm font-medium text-foreground">{ch.name}</span>
-                      </div>
-                      <div className="flex items-center gap-2">
-                        <span className="text-sm text-foreground font-medium font-mono">
-                          ${(ch.spend / 1000).toFixed(0)}K
+                        <span className="text-[10px] px-1.5 py-0.5 bg-background-secondary rounded text-foreground-muted">
+                          ε {results.elasticities?.[ch.name]?.mean.toFixed(2) || '?'}
                         </span>
-                        <span
-                          className={`text-xs font-medium ${
-                            ch.change > 0
-                              ? 'text-success'
-                              : ch.change < 0
-                              ? 'text-error'
-                              : 'text-foreground-muted'
-                          }`}
-                        >
+                      </div>
+                      <div className="flex items-center gap-3">
+                        <span className="text-sm font-mono text-foreground">${(ch.spend / 1000).toFixed(0)}K</span>
+                        <span className={`text-xs ${ch.change > 0 ? 'text-success' : ch.change < 0 ? 'text-error' : 'text-foreground-muted'}`}>
                           {ch.change > 0 ? '+' : ''}{ch.change.toFixed(0)}%
                         </span>
+                        <button
+                          onClick={() => setSelectedChannel(selectedChannel === ch.name ? null : ch.name)}
+                          className={`p-1 rounded transition-colors ${
+                            selectedChannel === ch.name ? 'bg-primary text-white' : 'hover:bg-background-secondary'
+                          }`}
+                          title="View response curve"
+                        >
+                          <TrendingUp className="w-3.5 h-3.5" />
+                        </button>
                       </div>
                     </div>
                     <input
@@ -301,215 +348,257 @@ export default function ScenariosPage() {
                   </div>
                 ))}
               </div>
+
+              {/* Response Curve Panel */}
+              {selectedChannel && (
+                <div className="mt-4 p-4 bg-background-secondary rounded-lg">
+                  <div className="flex items-center justify-between mb-2">
+                    <h4 className="text-sm font-medium text-foreground">{selectedChannel} Response Curve</h4>
+                    <button onClick={() => setSelectedChannel(null)} className="p-1 hover:bg-card rounded">
+                      <X className="w-4 h-4 text-foreground-muted" />
+                    </button>
+                  </div>
+                  <div className="h-[150px]">
+                    <ResponsiveContainer width="100%" height="100%">
+                      <ComposedChart data={generateResponseCurve(selectedChannel)}>
+                        <XAxis
+                          dataKey="spend"
+                          tickFormatter={v => `$${(v / 1000).toFixed(0)}K`}
+                          stroke="var(--foreground-muted)"
+                          fontSize={10}
+                          tickLine={false}
+                          axisLine={false}
+                        />
+                        <YAxis
+                          tickFormatter={v => `$${(v / 1000).toFixed(0)}K`}
+                          stroke="var(--foreground-muted)"
+                          fontSize={10}
+                          tickLine={false}
+                          axisLine={false}
+                          width={50}
+                        />
+                        <Tooltip
+                          contentStyle={{
+                            backgroundColor: 'var(--card)',
+                            border: '1px solid var(--border)',
+                            borderRadius: '8px',
+                            fontSize: '11px',
+                          }}
+                          formatter={(value: number) => [`$${(value / 1000).toFixed(1)}K`, 'Response']}
+                          labelFormatter={(label: number) => `Spend: $${(label / 1000).toFixed(1)}K`}
+                        />
+                        <Line
+                          type="monotone"
+                          dataKey="response"
+                          stroke="var(--primary)"
+                          strokeWidth={2}
+                          dot={false}
+                        />
+                        <ReferenceLine
+                          x={spendAllocation[selectedChannel]}
+                          stroke="var(--success)"
+                          strokeDasharray="3 3"
+                          strokeWidth={2}
+                        />
+                      </ComposedChart>
+                    </ResponsiveContainer>
+                  </div>
+                  <p className="text-[10px] text-foreground-muted mt-2">
+                    Current spend marked with dashed line. Curve flattening indicates diminishing returns.
+                  </p>
+                </div>
+              )}
             </div>
 
-            {/* Projected Results */}
-            <div className="p-5 rounded-xl bg-card border border-border space-y-4">
-              <h3 className="font-semibold text-foreground">Projected Results</h3>
-              <div className="grid grid-cols-3 gap-4">
-                <div className="p-4 rounded-lg bg-background-secondary">
-                  <p className="text-xs text-foreground-muted">Total Spend</p>
-                  <p className="text-xl font-semibold font-mono text-foreground mt-1">
-                    ${(currentTotalSpend / 1000000).toFixed(2)}M
+            {/* Projected Impact Summary */}
+            <div className="p-5 rounded-xl bg-card border border-border">
+              <h3 className="font-semibold text-foreground mb-3">Projected Impact</h3>
+              <div className="grid grid-cols-3 gap-3">
+                <div>
+                  <p className="text-[10px] text-foreground-muted">Spend</p>
+                  <p className="text-lg font-semibold font-mono text-foreground">
+                    ${(currentTotalSpend / 1e6).toFixed(2)}M
                   </p>
-                  <p
-                    className={`text-[11px] mt-1 ${
-                      spendChange > 0 ? 'text-warning' : spendChange < 0 ? 'text-success' : 'text-foreground-muted'
-                    }`}
-                  >
-                    {spendChange > 0 ? '+' : ''}{spendChange.toFixed(1)}% vs baseline
-                  </p>
+                  {spendChange !== 0 && (
+                    <p className={`text-[10px] ${spendChange > 0 ? 'text-warning' : 'text-success'}`}>
+                      {spendChange > 0 ? '+' : ''}{spendChange.toFixed(1)}%
+                    </p>
+                  )}
                 </div>
-                <div className="p-4 rounded-lg bg-background-secondary">
-                  <p className="text-xs text-foreground-muted">Expected Sales</p>
-                  <p className="text-xl font-semibold font-mono text-foreground mt-1">
-                    ${((projectedResults?.expected_sales || 0) / 1000000).toFixed(2)}M
+                <div>
+                  <p className="text-[10px] text-foreground-muted">Sales</p>
+                  <p className="text-lg font-semibold font-mono text-foreground">
+                    ${((projectedResults?.expected_sales || 0) / 1e6).toFixed(2)}M
                   </p>
-                  <p
-                    className={`text-[11px] mt-1 ${
-                      salesChange > 0 ? 'text-success' : salesChange < 0 ? 'text-error' : 'text-foreground-muted'
-                    }`}
-                  >
-                    {salesChange > 0 ? '+' : ''}{salesChange.toFixed(1)}% lift
-                  </p>
+                  {salesChange !== 0 && (
+                    <p className={`text-[10px] ${salesChange > 0 ? 'text-success' : 'text-error'}`}>
+                      {salesChange > 0 ? '+' : ''}{salesChange.toFixed(1)}% lift
+                    </p>
+                  )}
                 </div>
-                <div className="p-4 rounded-lg bg-background-secondary">
-                  <p className="text-xs text-foreground-muted">Expected ROI</p>
-                  <p className="text-xl font-semibold font-mono text-foreground mt-1">
+                <div>
+                  <p className="text-[10px] text-foreground-muted">ROI</p>
+                  <p className="text-lg font-semibold font-mono text-foreground">
                     {projectedResults?.roi.toFixed(2)}x
-                  </p>
-                  <p className="text-[11px] mt-1 text-foreground-muted">
-                    return on ad spend
                   </p>
                 </div>
               </div>
             </div>
           </div>
 
-          {/* Right Column */}
+          {/* Right Panel - Compare Scenarios */}
           <div className="space-y-6">
-            {/* Save Scenario */}
-            <div className="p-5 rounded-xl bg-card border border-border space-y-4">
-              <h3 className="font-semibold text-foreground">Save Scenario</h3>
+            <div className="p-5 rounded-xl bg-card border border-border">
+              <h3 className="font-semibold text-foreground mb-4">Compare Scenarios</h3>
+
+              {/* Side-by-Side Comparison Cards */}
+              <div className="grid grid-cols-2 gap-4">
+                {/* Historical Card */}
+                <div className="p-4 rounded-lg bg-background-secondary">
+                  <p className="text-xs font-medium text-foreground-muted">HISTORICAL</p>
+                  <p className="text-[10px] text-foreground-muted">(actual training data)</p>
+                  <div className="mt-3 space-y-3">
+                    <div>
+                      <p className="text-[10px] text-foreground-muted">Spend</p>
+                      <p className="text-lg font-semibold font-mono text-foreground">${(baselineTotalSpend / 1e6).toFixed(2)}M</p>
+                    </div>
+                    <div>
+                      <p className="text-[10px] text-foreground-muted">Sales</p>
+                      <p className="text-lg font-semibold font-mono text-foreground">${(baselineTotalSales / 1e6).toFixed(2)}M</p>
+                    </div>
+                    <div>
+                      <p className="text-[10px] text-foreground-muted">ROI</p>
+                      <p className="text-lg font-semibold font-mono text-foreground">{historicalRoi.toFixed(2)}x</p>
+                    </div>
+                  </div>
+                </div>
+
+                {/* Current Card */}
+                <div className={`p-4 rounded-lg border-2 ${
+                  salesChange > 0 ? 'border-success bg-success/5' :
+                  salesChange < 0 ? 'border-error bg-error/5' : 'border-border bg-card'
+                }`}>
+                  <p className="text-xs font-medium text-foreground-muted">
+                    {isCurrentOptimized ? 'OPTIMIZED' : isHistorical ? 'CURRENT' : 'CUSTOM'}
+                  </p>
+                  <div className="mt-3 space-y-3">
+                    <div>
+                      <p className="text-[10px] text-foreground-muted">Spend</p>
+                      <p className="text-lg font-semibold font-mono text-foreground">
+                        ${(currentTotalSpend / 1e6).toFixed(2)}M
+                        {spendChange !== 0 && (
+                          <span className={`text-xs ml-1 ${spendChange > 0 ? 'text-warning' : 'text-success'}`}>
+                            ({spendChange > 0 ? '+' : ''}{spendChange.toFixed(0)}%)
+                          </span>
+                        )}
+                      </p>
+                    </div>
+                    <div>
+                      <p className="text-[10px] text-foreground-muted">Sales</p>
+                      <p className="text-lg font-semibold font-mono text-foreground">
+                        ${((projectedResults?.expected_sales || 0) / 1e6).toFixed(2)}M
+                        {salesChange !== 0 && (
+                          <span className={`text-xs ml-1 ${salesChange > 0 ? 'text-success' : 'text-error'}`}>
+                            ({salesChange > 0 ? '+' : ''}{salesChange.toFixed(0)}%)
+                          </span>
+                        )}
+                      </p>
+                    </div>
+                    <div>
+                      <p className="text-[10px] text-foreground-muted">ROI</p>
+                      <p className={`text-lg font-semibold font-mono ${
+                        (projectedResults?.roi || 0) > historicalRoi ? 'text-success' : 'text-foreground'
+                      }`}>
+                        {projectedResults?.roi.toFixed(2)}x
+                      </p>
+                    </div>
+                  </div>
+                </div>
+              </div>
+
+              {/* Efficiency Summary */}
+              <div className={`mt-4 p-3 rounded-lg text-center ${
+                salesChange > spendChange ? 'bg-success/10' :
+                salesChange < spendChange ? 'bg-error/10' : 'bg-background-secondary'
+              }`}>
+                {salesChange > spendChange ? (
+                  <p className="text-sm font-medium text-success">Efficient: Sales lift exceeds spend increase</p>
+                ) : salesChange < spendChange ? (
+                  <p className="text-sm font-medium text-error">Inefficient: Spend increase exceeds sales lift</p>
+                ) : (
+                  <p className="text-sm text-foreground-muted">No changes from historical</p>
+                )}
+              </div>
+            </div>
+
+            {/* Save Current Scenario */}
+            <div className="p-5 rounded-xl bg-card border border-border">
+              <h3 className="font-semibold text-foreground mb-3">Save Scenario</h3>
               <div className="flex gap-2">
                 <input
                   type="text"
-                  placeholder="Scenario name"
+                  placeholder="Name this scenario..."
                   value={scenarioName}
                   onChange={(e) => setScenarioName(e.target.value)}
-                  className="flex-1 px-3.5 py-2.5 bg-background border border-border rounded-lg text-foreground text-sm"
+                  className="flex-1 px-3 py-2 bg-background border border-border rounded-lg text-sm text-foreground"
                 />
                 <button
                   onClick={handleSaveScenario}
-                  disabled={isLoading}
-                  className="flex items-center gap-1.5 px-4 py-2.5 bg-primary text-white rounded-lg text-sm font-medium disabled:opacity-50"
+                  disabled={!scenarioName.trim() || isLoading}
+                  className="px-4 py-2 bg-primary text-white rounded-lg text-sm font-medium disabled:opacity-50"
                 >
-                  <Save className="w-3.5 h-3.5" />
                   {isLoading ? 'Saving...' : 'Save'}
                 </button>
               </div>
             </div>
 
-            {/* Saved Scenarios */}
-            <div className="p-5 rounded-xl bg-card border border-border space-y-4">
-              <h3 className="font-semibold text-foreground">Saved Scenarios</h3>
-              <div className="space-y-2">
-                {/* Baseline */}
-                <div className="flex items-center justify-between p-3 bg-background-secondary rounded-lg">
-                  <div>
-                    <p className="text-sm font-medium text-foreground">Current Baseline</p>
-                    <p className="text-[11px] text-foreground-muted">
-                      ${(baselineTotalSpend / 1000000).toFixed(2)}M spend
-                    </p>
-                  </div>
-                  <span className="font-mono text-sm text-foreground font-medium">
-                    ${(baselineTotalSales / 1000000).toFixed(2)}M
-                  </span>
-                </div>
-
-                {/* Saved scenarios */}
-                {scenarios.map((scenario, i) => (
-                  <div
-                    key={`${scenario.name}-${i}`}
-                    className="flex items-center justify-between p-3 border border-border rounded-lg hover:border-primary cursor-pointer"
-                    onClick={() => {
-                      setSpendAllocation(scenario.spend_allocation)
-                    }}
-                  >
-                    <div>
-                      <p className="text-sm font-medium text-foreground">{scenario.name}</p>
-                      <p className="text-[11px] text-foreground-muted">
-                        ${(scenario.total_spend / 1000000).toFixed(2)}M spend
-                      </p>
-                    </div>
-                    <span
-                      className={`font-mono text-sm font-medium ${
-                        scenario.projected_sales > baselineTotalSales ? 'text-success' : 'text-foreground'
-                      }`}
+            {/* Saved Scenarios List */}
+            {scenarios.length > 0 && (
+              <div className="p-5 rounded-xl bg-card border border-border">
+                <p className="text-xs font-medium text-foreground-muted mb-3">SAVED SCENARIOS</p>
+                <div className="space-y-2">
+                  {scenarios.map((s, i) => (
+                    <div
+                      key={`${s.name}-${i}`}
+                      className="flex items-center justify-between p-3 hover:bg-background-secondary rounded-lg transition-colors"
                     >
-                      ${(scenario.projected_sales / 1000000).toFixed(2)}M
-                    </span>
-                  </div>
-                ))}
-
-                {scenarios.length === 0 && (
-                  <p className="text-sm text-foreground-muted text-center py-4">
-                    No saved scenarios yet
-                  </p>
-                )}
+                      <div>
+                        <p className="text-sm font-medium text-foreground">{s.name}</p>
+                        <p className="text-[10px] text-foreground-muted">
+                          ${(s.total_spend / 1e6).toFixed(2)}M → ${(s.projected_sales / 1e6).toFixed(2)}M
+                        </p>
+                      </div>
+                      <button
+                        onClick={() => setSpendAllocation(s.spend_allocation)}
+                        className="px-2 py-1 text-xs border border-border rounded hover:bg-card-hover transition-colors"
+                      >
+                        Load
+                      </button>
+                    </div>
+                  ))}
+                </div>
               </div>
-            </div>
+            )}
 
-            {/* Export */}
-            <div className="space-y-2">
+            {/* Export Buttons */}
+            <div className="flex gap-2">
               <button
                 onClick={handleExportReport}
-                className="w-full flex items-center justify-center gap-2 px-4 py-3 border border-border rounded-lg text-foreground hover:bg-card-hover transition-colors"
+                className="flex-1 flex items-center justify-center gap-2 px-4 py-2.5 border border-border rounded-lg text-foreground text-sm hover:bg-card-hover transition-colors"
               >
                 <Download className="w-4 h-4" />
-                <span className="font-medium">Export CSV</span>
+                Export CSV
               </button>
               <button
                 onClick={handleExportFullReport}
-                className="w-full flex items-center justify-center gap-2 px-4 py-2 text-foreground-muted text-sm hover:text-foreground transition-colors"
+                className="flex-1 flex items-center justify-center gap-2 px-4 py-2.5 border border-border rounded-lg text-foreground text-sm hover:bg-card-hover transition-colors"
               >
-                <Download className="w-3.5 h-3.5" />
-                <span>Export Full Report (JSON)</span>
+                <Download className="w-4 h-4" />
+                Export JSON
               </button>
             </div>
           </div>
         </div>
-
-        {/* Scenario Comparison Chart */}
-        {comparisonData.length > 1 && (
-          <div className="mt-6 p-5 rounded-xl bg-card border border-border space-y-4">
-            <h3 className="font-semibold text-foreground">Scenario Comparison</h3>
-            <p className="text-xs text-foreground-muted">Projected sales with 85-115% confidence bands</p>
-            <div className="h-[280px]">
-              <ResponsiveContainer width="100%" height="100%">
-                <ComposedChart data={comparisonData}>
-                  <CartesianGrid strokeDasharray="3 3" stroke="var(--border)" />
-                  <XAxis
-                    dataKey="name"
-                    stroke="var(--foreground-muted)"
-                    fontSize={12}
-                  />
-                  <YAxis
-                    stroke="var(--foreground-muted)"
-                    fontSize={12}
-                    tickFormatter={(v) => `$${(v / 1000000).toFixed(1)}M`}
-                  />
-                  <Tooltip
-                    contentStyle={{
-                      backgroundColor: 'var(--card)',
-                      border: '1px solid var(--border)',
-                      borderRadius: '8px',
-                    }}
-                    formatter={(value: number, name: string) => {
-                      if (name === 'salesLower' || name === 'salesUpper') return null
-                      return [`$${(value / 1000000).toFixed(2)}M`, name === 'sales' ? 'Sales' : 'Spend']
-                    }}
-                  />
-                  <Legend />
-                  {/* Confidence band as area */}
-                  <Area
-                    type="monotone"
-                    dataKey="salesUpper"
-                    fill="var(--chart-1)"
-                    fillOpacity={0.1}
-                    stroke="none"
-                    name="Upper Bound"
-                    stackId="confidence"
-                  />
-                  <Area
-                    type="monotone"
-                    dataKey="salesLower"
-                    fill="var(--background)"
-                    fillOpacity={1}
-                    stroke="none"
-                    name="Lower Bound"
-                    stackId="confidence"
-                  />
-                  <Bar
-                    dataKey="sales"
-                    fill="var(--chart-1)"
-                    name="Projected Sales"
-                    radius={[4, 4, 0, 0]}
-                    barSize={40}
-                  />
-                  <Line
-                    type="monotone"
-                    dataKey="spend"
-                    stroke="var(--chart-2)"
-                    strokeWidth={2}
-                    name="Total Spend"
-                    dot={{ fill: 'var(--chart-2)', strokeWidth: 2 }}
-                  />
-                </ComposedChart>
-              </ResponsiveContainer>
-            </div>
-          </div>
-        )}
       </div>
     </div>
   )
