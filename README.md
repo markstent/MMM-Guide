@@ -53,6 +53,8 @@ All notebooks are located in the `notebooks/` folder.
 
 The project includes a modern web application (MMMpact) that provides a no-code interface for building and deploying Marketing Mix Models. It's designed for marketing analysts and data scientists who want to run MMM analysis without writing Python code.
 
+![MMMpact Results Dashboard](docs/mmmpact-results.png)
+
 ### What It Does
 
 **MMMpact** guides you through the complete MMM workflow:
