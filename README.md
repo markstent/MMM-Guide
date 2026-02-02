@@ -51,7 +51,25 @@ All notebooks are located in the `notebooks/` folder.
 
 ## Web Application
 
-The project includes a modern web application with a React frontend and FastAPI backend.
+The project includes a modern web application (MMMpact) that provides a no-code interface for building and deploying Marketing Mix Models. It's designed for marketing analysts and data scientists who want to run MMM analysis without writing Python code.
+
+### What It Does
+
+**MMMpact** guides you through the complete MMM workflow:
+
+- **Upload your data** - Drag and drop CSV/Excel files or use the built-in demo dataset
+- **Explore and validate** - Visualize trends, check data quality, and understand your marketing spend patterns
+- **Configure the model** - Set adstock decay rates, saturation curves, and Bayesian priors per channel
+- **Train with confidence** - Run MCMC sampling with real-time progress and convergence diagnostics
+- **Understand results** - Interactive charts showing channel contributions, ROI, response curves, and model fit
+- **Plan budgets** - Optimize allocation across channels, set constraints, compare scenarios, and export recommendations
+
+### Who It's For
+
+- **Marketing analysts** who need to measure channel effectiveness without coding
+- **Data scientists** who want a faster way to iterate on MMM configurations
+- **Agencies** presenting MMM insights to clients with interactive dashboards
+- **Teams** collaborating on budget planning with exportable scenarios
 
 ### Running the Web App
 
