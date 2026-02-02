@@ -1,10 +1,6 @@
 """FastAPI backend for MMM Dashboard."""
 
-import sys
 from pathlib import Path
-
-# Add dashboard/core to path so we can import the existing modules
-sys.path.insert(0, str(Path(__file__).parent.parent / "dashboard"))
 
 from fastapi import FastAPI, UploadFile, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
@@ -46,7 +42,7 @@ def clean_for_json(obj):
         return obj
 
 # Import core modules
-from core import (
+from backend.core import (
     geometric_adstock,
     geometric_adstock_matrix,
     hill_function,
@@ -352,14 +348,22 @@ def compute_holdout_metrics(
     trace,
     decay_rates: Dict[str, float],
     saturation_params: Dict[str, Any],
-    config: Dict
+    config: Dict,
+    n_train: int,
+    control_cols: List[str] = None,
+    event_names: List[str] = None,
+    X_media_means: np.ndarray = None
 ) -> Dict[str, Any]:
-    """Compute metrics on holdout data for model validation."""
+    """Compute metrics on holdout data for model validation.
+
+    Includes all model components: media, trend, seasonality, events, controls.
+    """
     try:
         y_holdout = df_holdout[target_col].values
         X_media_holdout = df_holdout[media_cols].values
+        n_holdout = len(y_holdout)
 
-        # Apply same transformations
+        # Apply same transformations to media
         X_transformed = X_media_holdout.copy()
         for i, col in enumerate(media_cols):
             if decay_rates.get(col, 0) > 0:
@@ -374,13 +378,87 @@ def compute_holdout_metrics(
                 max_val = X_transformed[:, i].max()
                 X_transformed[:, i] = hill_function_scaled(X_transformed[:, i], K, S, max_val)
 
-        # Get predictions
-        X_media_log = log_transform(X_transformed)
+        # Scale media by training means (same as training)
+        if X_media_means is not None:
+            X_transformed = X_transformed / (X_media_means + 1e-8)
+
+        # Get posterior means
         posterior = trace.posterior
         betas = posterior['beta'].values.mean(axis=(0, 1))
         intercept = posterior['intercept'].values.mean()
 
+        # Start with intercept + media contribution
+        X_media_log = log_transform(X_transformed)
         y_pred_log = intercept + np.dot(X_media_log, betas)
+
+        # Add trend component (continuation from training)
+        if 'gamma_trend' in posterior:
+            gamma_trend = posterior['gamma_trend'].values.mean()
+            trend_type = config.get('trend_type', 'linear')
+            total_periods = n_train + n_holdout
+            t = np.arange(n_train, total_periods)  # Holdout indices
+
+            if trend_type == 'none':
+                holdout_trend = np.zeros(n_holdout)
+            elif trend_type == 'linear':
+                holdout_trend = t / total_periods
+            elif trend_type == 'log':
+                holdout_trend = np.log1p(t) / np.log1p(total_periods)
+            elif trend_type == 'quadratic':
+                holdout_trend = (t / total_periods) ** 2
+            else:
+                holdout_trend = t / total_periods
+
+            # Normalize to max 1
+            if holdout_trend.max() > 0:
+                holdout_trend = holdout_trend / holdout_trend.max()
+
+            y_pred_log = y_pred_log + gamma_trend * holdout_trend
+
+        # Add seasonality component (Fourier features for holdout dates)
+        if 'gamma_fourier' in posterior:
+            gamma_fourier = posterior['gamma_fourier'].values.mean(axis=(0, 1))
+            period = config.get('seasonality_period', 52)
+            harmonics = 3
+
+            # Create Fourier features for holdout period (continuing from training)
+            total_periods = n_train + n_holdout
+            t_holdout = np.arange(n_train, total_periods)
+            X_fourier_holdout = []
+            for k in range(1, harmonics + 1):
+                X_fourier_holdout.append(np.sin(2 * np.pi * k * t_holdout / period))
+                X_fourier_holdout.append(np.cos(2 * np.pi * k * t_holdout / period))
+            X_fourier_holdout = np.column_stack(X_fourier_holdout)
+
+            y_pred_log = y_pred_log + np.dot(X_fourier_holdout, gamma_fourier)
+
+        # Add controls component
+        if control_cols and 'gamma_controls' in posterior:
+            valid_control_cols = [c for c in control_cols if c in df_holdout.columns]
+            if valid_control_cols:
+                gamma_controls = posterior['gamma_controls'].values.mean(axis=(0, 1))
+                X_controls_holdout = df_holdout[valid_control_cols].fillna(0).values
+                # Standardize (should use training mean/std ideally, but approximate)
+                X_controls_holdout = (X_controls_holdout - X_controls_holdout.mean(axis=0)) / (X_controls_holdout.std(axis=0) + 1e-8)
+                if len(gamma_controls) == X_controls_holdout.shape[1]:
+                    y_pred_log = y_pred_log + np.dot(X_controls_holdout, gamma_controls)
+
+        # Add events component
+        if event_names and 'gamma_events' in posterior:
+            gamma_events = posterior['gamma_events'].values.mean(axis=(0, 1))
+            event_matrix = []
+            for event_name in event_names:
+                if event_name in df_holdout.columns:
+                    event_col = df_holdout[event_name].fillna(0).values
+                else:
+                    event_col = np.zeros(n_holdout)
+                event_matrix.append(event_col)
+            if event_matrix:
+                X_events_holdout = np.column_stack(event_matrix)
+                if len(gamma_events) == X_events_holdout.shape[1]:
+                    y_pred_log = y_pred_log + np.dot(X_events_holdout, gamma_events)
+
+        # Convert from log-space to original scale
         y_pred = np.exp(y_pred_log) - 1
 
         # Calculate metrics
@@ -461,45 +539,75 @@ def compute_response_curves(
     elasticities: Dict[str, float],
     current_spend: Dict[str, float],
     saturation_params: Dict[str, Any],
+    current_contributions: Dict[str, float] = None,
     n_points: int = 50
 ) -> Dict[str, List[Dict]]:
-    """Compute response curves for each channel."""
+    """Compute response curves for each channel.
+
+    Response curve shows expected sales contribution at different spend levels.
+    Marginal ROI shows the return on the next dollar spent (dSales/dSpend).
+    """
     response_curves = {}
 
     for col in media_cols:
         elasticity = elasticities.get(col, 0.1)
         curr_spend = current_spend.get(col, 1)
+        curr_contrib = current_contributions.get(col, curr_spend * 2) if current_contributions else curr_spend * 2
         sat_params = saturation_params.get(col)
 
         # Generate spend range from 0 to 3x current spend
         max_spend = max(curr_spend * 3, 1000)
-        spend_range = np.linspace(0, max_spend, n_points)
+        spend_range = np.linspace(max_spend * 0.01, max_spend, n_points)  # Start from 1% to avoid division issues
+
+        # Find the index of the point closest to current spend
+        closest_idx = int(np.argmin(np.abs(spend_range - curr_spend)))
 
         curve_data = []
-        for spend in spend_range:
-            if spend <= 0:
-                response = 0
-                marginal_roi = elasticity
-            else:
-                # Apply saturation if configured
-                if sat_params:
-                    K, S = sat_params['K'], sat_params['S']
-                    saturated = hill_function(np.array([spend]), K, S)[0]
-                    response = saturated * curr_spend * elasticity
-                    # Marginal ROI is derivative
-                    eps = max(spend * 0.01, 1)
-                    sat_plus = hill_function(np.array([spend + eps]), K, S)[0]
-                    marginal_roi = (sat_plus - saturated) / eps * elasticity
+        for i, spend in enumerate(spend_range):
+            if sat_params and sat_params.get('K', 0) > 0:
+                # With saturation (Hill function)
+                K, S = sat_params['K'], sat_params['S']
+                # Response at this spend level (scaled to match current contribution)
+                sat_current = hill_function(np.array([curr_spend]), K, S)[0]
+                sat_at_spend = hill_function(np.array([spend]), K, S)[0]
+
+                if sat_current > 0:
+                    response = curr_contrib * (sat_at_spend / sat_current)
                 else:
-                    # Log-log response: response = A * spend^elasticity
-                    response = (spend + 1) ** elasticity
-                    marginal_roi = elasticity / (spend + 1) if spend > 0 else elasticity
+                    response = 0
+
+                # Marginal ROI = derivative of Hill function * scaling factor
+                # d/dx [x^S / (K^S + x^S)] = S * K^S * x^(S-1) / (K^S + x^S)^2
+                eps = max(spend * 0.001, 0.1)
+                sat_plus = hill_function(np.array([spend + eps]), K, S)[0]
+                d_sat = (sat_plus - sat_at_spend) / eps
+
+                # Scale to get actual marginal ROI ($ sales per $ spend)
+                if sat_current > 0:
+                    marginal_roi = d_sat * (curr_contrib / sat_current)
+                else:
+                    marginal_roi = 0
+            else:
+                # Log-log model without saturation
+                # Sales = A * spend^elasticity, where A is calibrated to current
+                # At current spend: curr_contrib = A * curr_spend^elasticity
+                # So A = curr_contrib / curr_spend^elasticity
+
+                if curr_spend > 0:
+                    A = curr_contrib / (curr_spend ** elasticity)
+                    response = A * (spend ** elasticity)
+                    # Marginal ROI = d(Sales)/d(Spend) = A * elasticity * spend^(elasticity-1)
+                    #              = elasticity * Sales / Spend
+                    marginal_roi = elasticity * response / spend if spend > 0 else elasticity * A
+                else:
+                    response = 0
+                    marginal_roi = 0
 
             curve_data.append({
                 'spend': float(spend),
                 'response': float(response),
-                'marginal_roi': float(marginal_roi),
-                'is_current': abs(spend - curr_spend) < curr_spend * 0.05
+                'marginalRoi': float(marginal_roi),
+                'isCurrent': i == closest_idx
             })
 
         response_curves[col] = curve_data
@@ -1298,18 +1406,23 @@ async def train_model():
         for i, col in enumerate(media_cols):
             col_config = saturation_config.get(col, {})
             if col_config.get('enabled', False):  # Disabled by default to maintain backwards compatibility
-                K = col_config.get('K', X_media_adstocked[:, i].mean() * 2)  # Default to 2x mean
+                K_raw = col_config.get('K', 50000)  # K in raw spend units
                 S = col_config.get('S', 1.5)
-                saturation_params_used[col] = {'K': K, 'S': S}
+                # Scale K by the same factor used to scale the data
+                # K_raw is in original units, data is now scaled by mean
+                mean_val = X_media_means.get(col, 1.0)
+                K_scaled = K_raw / mean_val if mean_val > 0 else K_raw
+                saturation_params_used[col] = {'K': K_raw, 'S': S}  # Store original K for display
+                print(f"Saturation for {col}: K_raw={K_raw}, mean={mean_val:.2f}, K_scaled={K_scaled:.4f}, S={S}")
                 # Scale the saturated values back to original scale for interpretability
                 max_val = X_media_adstocked[:, i].max()
                 X_media_saturated[:, i] = hill_function_scaled(
                     X_media_adstocked[:, i],
-                    K=K, S=S,
+                    K=K_scaled, S=S,
                     max_effect=max_val
                 )
             else:
-                saturation_params_used[col] = None
+                saturation_params_used[col] = {'K': 0, 'S': 0, 'enabled': False}
 
         X_media = X_media_saturated
 
@@ -1440,9 +1553,14 @@ async def train_model():
         # Calculate holdout metrics if applicable
         holdout_metrics = None
         if df_holdout is not None and len(df_holdout) > 0:
+            n_train = len(y)  # Number of training periods
             holdout_metrics = compute_holdout_metrics(
                 df_holdout, media_cols, target_col, trace,
-                decay_rates_used, saturation_params_used, config
+                decay_rates_used, saturation_params_used, config,
+                n_train=n_train,
+                control_cols=valid_control_cols,
+                event_names=event_names,
+                X_media_means=X_media_means
             )
             session_data['holdout_metrics'] = holdout_metrics
 
@@ -1490,6 +1608,7 @@ async def get_model_results():
         X_media_log=X_media_log,
         y_mean=y.mean(),
         channel_names=media_cols,
+        X_media_raw=X_media_raw,
     )
 
     # Compute ROI
@@ -1606,15 +1725,52 @@ async def get_model_results():
     posterior_predictive['predicted_ci_upper'] = np.percentile(pred_samples, 95, axis=0).tolist()
 
     # ===== RESPONSE CURVES =====
+    # Compute actual dollar contributions for each channel (not log-space approximation)
+    # Baseline = what sales would be with zero media spend
+    baseline_log = intercept_mean
+    if trend is not None:
+        baseline_log = baseline_log + gamma_trend_mean * trend
+    if X_fourier is not None and 'gamma_fourier' in posterior:
+        baseline_log = baseline_log + np.dot(X_fourier, gamma_fourier_mean)
+    if X_events is not None and X_events.shape[1] > 0 and 'gamma_events' in posterior:
+        gamma_events_mean = posterior['gamma_events'].mean(axis=(0, 1))
+        baseline_log = baseline_log + np.dot(X_events, gamma_events_mean)
+    if X_controls is not None and X_controls.shape[1] > 0 and 'gamma_controls' in posterior:
+        gamma_controls_mean = posterior['gamma_controls'].mean(axis=(0, 1))
+        baseline_log = baseline_log + np.dot(X_controls, gamma_controls_mean)
+
+    baseline_sales = np.exp(baseline_log) - 1
+    total_media_effect = y_pred - baseline_sales  # Per-period media effect in dollars
+
+    # Compute each channel's share of total media effect
+    media_log_contribs = np.zeros((len(y), len(media_cols)))
+    for j, col in enumerate(media_cols):
+        media_log_contribs[:, j] = beta_mean[j] * X_media_log[:, j]
+    total_media_log = media_log_contribs.sum(axis=1)
+
+    # Actual dollar contributions per channel (summed across all periods)
+    actual_channel_contrib = {}
+    for j, col in enumerate(media_cols):
+        # For each period, channel's share of media effect
+        channel_shares = np.where(total_media_log > 0,
+                                  media_log_contribs[:, j] / total_media_log,
+                                  0)
+        channel_dollar_contrib = channel_shares * np.maximum(0, total_media_effect)
+        actual_channel_contrib[col] = float(channel_dollar_contrib.sum())
+
     elasticities = {col: contributions[col]['elasticity_mean'] for col in media_cols}
     saturation_params = session_data.get('saturation_params', {})
     response_curves = compute_response_curves(
-        media_cols, elasticities, channel_spend, saturation_params
+        media_cols, elasticities, channel_spend, saturation_params,
+        current_contributions=actual_channel_contrib
     )
+
+    # Recalculate ROI with actual dollar contributions
+    roi_df = calculate_roi(actual_channel_contrib, channel_spend)
 
     # ===== SHAPLEY VALUES =====
     baseline = np.exp(intercept_mean)
-    channel_effects = {col: channel_contrib[col] for col in media_cols}
+    channel_effects = {col: actual_channel_contrib[col] for col in media_cols}
     shapley_values = compute_shapley_values(baseline, channel_effects)
 
     # Prepare Shapley attribution table
@@ -1625,7 +1781,7 @@ async def get_model_results():
             'channel': col,
             'shapley_value': shapley_values.get(col, 0),
             'share': shapley_values.get(col, 0) / total_attributed * 100 if total_attributed > 0 else 0,
-            'direct_contribution': channel_contrib.get(col, 0),
+            'direct_contribution': actual_channel_contrib.get(col, 0),
         })
 
     # Compute decomposition time series
@@ -1636,20 +1792,49 @@ async def get_model_results():
         date_col = mapping['date_col']
         dates = pd.to_datetime(df_train[date_col]).dt.strftime('%Y-%m-%d').tolist()
 
+        # Get trend and seasonality for baseline calculation (use same variables as y_pred calculation)
+        # X_fourier and trend are already fetched above (lines ~1548-1551)
+        # gamma_fourier_mean and gamma_trend_mean are already computed above
+
         for i, date in enumerate(dates):
             if i >= len(y):
                 break
             row = {"date": date, "actual": float(y[i]), "predicted": float(y_pred[i])}
 
-            # Baseline (intercept contribution)
-            baseline_val = np.exp(intercept_mean)
-            row["baseline"] = float(baseline_val)
+            # Baseline = intercept + trend + seasonality (everything except media)
+            # This represents what sales would be with zero media spend
+            baseline_log = intercept_mean
 
-            # Channel contributions
+            # Add trend contribution
+            if trend is not None:
+                baseline_log += gamma_trend_mean * trend[i]
+
+            # Add seasonality contribution (use X_fourier, not fourier_features)
+            if X_fourier is not None and 'gamma_fourier' in posterior:
+                baseline_log += np.dot(X_fourier[i], gamma_fourier_mean)
+
+            # Convert to original scale (same transform as y_pred)
+            baseline_val = np.exp(baseline_log) - 1
+            row["baseline"] = float(max(0, baseline_val))
+
+            # Channel contributions: proportional share of total media effect
+            # Total media effect = y_pred - baseline
+            total_media_effect = y_pred[i] - baseline_val
+
+            # Compute each channel's share based on their log-space contribution
+            media_log_contribs = []
             for j, col in enumerate(media_cols):
-                contrib = np.exp(beta_mean[j] * X_media_log[i, j]) - 1
-                contrib_scaled = baseline_val * contrib
-                row[col] = float(max(0, contrib_scaled))
+                media_log_contribs.append(beta_mean[j] * X_media_log[i, j])
+
+            total_media_log = sum(media_log_contribs)
+
+            for j, col in enumerate(media_cols):
+                if total_media_log > 0 and total_media_effect > 0:
+                    # Proportional attribution based on log-space contribution
+                    share = media_log_contribs[j] / total_media_log
+                    row[col] = float(max(0, share * total_media_effect))
+                else:
+                    row[col] = 0.0
 
             decomposition.append(row)
 
@@ -1709,7 +1894,7 @@ async def get_model_results():
         "control_coefficients": control_coefficients,
         "transformations": {
             "adstock": session_data.get('decay_rates', {}),
-            "saturation": {k: v for k, v in session_data.get('saturation_params', {}).items() if v},
+            "saturation": session_data.get('saturation_params', {}),
             "events": event_names if event_names else [],
             "controls": control_cols if control_cols else [],
         }
@@ -1725,37 +1910,62 @@ async def optimize_budget(request: OptimizationRequest):
     mapping = session_data['mapping']
     y = session_data['y']
     X_media = session_data['X_media']
+    X_media_raw = session_data.get('X_media_raw', X_media)
+    media_cols = mapping['media_cols']
 
     # Get elasticities from trace
     trace = session_data['trace']
-    betas = trace.posterior['beta'].values
+    posterior = trace.posterior
+    betas = posterior['beta'].values
+    beta_mean = betas.mean(axis=(0, 1))
     elasticities = {
-        col: float(betas[:, :, i].mean())
-        for i, col in enumerate(mapping['media_cols'])
+        col: float(beta_mean[i])
+        for i, col in enumerate(media_cols)
     }
 
-    # Current spend
+    # Current spend (use raw spend values summed over all periods)
     current_spend = {
-        col: float(X_media[:, i].sum())
-        for i, col in enumerate(mapping['media_cols'])
+        col: float(X_media_raw[:, i].sum())
+        for i, col in enumerate(media_cols)
     }
+
+    # Compute channel contributions using log-log model
+    # This matches the approach in get_model_results
+    X_media_log = log_transform(X_media)
+    intercept_mean = float(posterior['intercept'].values.mean())
+
+    # Compute per-channel contributions (in sales units)
+    channel_contributions = {}
+    for i, col in enumerate(media_cols):
+        # Average contribution per period from this channel
+        # In log-log: contribution in log-space = beta * log(X)
+        # Approximate sales contribution = total_sales * (channel_effect / total_effect)
+        channel_effect = beta_mean[i] * X_media_log[:, i].mean()
+        total_media_effect = sum(beta_mean[j] * X_media_log[:, j].mean() for j in range(len(media_cols)))
+        if total_media_effect > 0:
+            # Proportion of sales attributable to this channel
+            channel_share = channel_effect / total_media_effect
+            channel_contributions[col] = float(y.sum() * channel_share)
+        else:
+            channel_contributions[col] = 0.0
 
     # Optimize
     optimal_spend = optimize_budget_marginal_roi(
         total_budget=request.total_budget,
-        channels=mapping['media_cols'],
+        channels=media_cols,
         elasticities=elasticities,
         current_spend=current_spend,
         avg_sales=float(y.mean()),
         constraints=request.constraints,
     )
 
-    # Calculate expected lift
+    # Calculate expected lift with channel contributions
     lift = calculate_expected_lift(
         current_spend=current_spend,
         optimal_spend=optimal_spend,
         elasticities=elasticities,
         current_sales=float(y.sum()),
+        channel_contributions=channel_contributions,
     )
 
     return {
@@ -1769,7 +1979,7 @@ async def optimize_budget(request: OptimizationRequest):
                 "change_pct": (optimal_spend[col] - current_spend[col]) / current_spend[col] * 100
                 if current_spend[col] > 0 else 0
             }
-            for col in mapping['media_cols']
+            for col in media_cols
         },
     }
 
@@ -1782,12 +1992,23 @@ async def create_new_scenario(request: ScenarioRequest):
 
     mapping = session_data['mapping']
     y = session_data['y']
+    X_media = session_data['X_media']
+    X_media_raw = session_data.get('X_media_raw', X_media)
+    media_cols = mapping['media_cols']
 
     trace = session_data['trace']
-    betas = trace.posterior['beta'].values
+    posterior = trace.posterior
+    betas = posterior['beta'].values
+    beta_mean = betas.mean(axis=(0, 1))
     elasticities = {
-        col: float(betas[:, :, i].mean())
-        for i, col in enumerate(mapping['media_cols'])
+        col: float(beta_mean[i])
+        for i, col in enumerate(media_cols)
+    }
+
+    # Get baseline spend (average spend per channel from training data)
+    baseline_spend = {
+        col: float(X_media_raw[:, i].mean())
+        for i, col in enumerate(media_cols)
     }
 
     scenario = create_scenario(
@@ -1795,6 +2016,7 @@ async def create_new_scenario(request: ScenarioRequest):
         spend_allocation=request.spend_allocation,
         elasticities=elasticities,
         baseline_sales=float(y.mean()),
+        baseline_spend=baseline_spend,
     )
 
     # Store scenario
