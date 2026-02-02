@@ -2,7 +2,7 @@
 
 import { useState, useEffect } from 'react'
 import { useRouter } from 'next/navigation'
-import { CircleHelp, TrendingUp, X, Download, AlertCircle } from 'lucide-react'
+import { CircleHelp, TrendingUp, X, Download, AlertCircle, Target, DollarSign } from 'lucide-react'
 import {
   ComposedChart,
   Line,
@@ -11,20 +11,61 @@ import {
   ResponsiveContainer,
   ReferenceLine,
   Tooltip,
+  BarChart,
+  Bar,
+  CartesianGrid,
+  Cell,
 } from 'recharts'
 import { useAppState } from '@/lib/store'
-import { createScenario } from '@/lib/api'
+import { createScenario, optimizeBudget, optimizeForSalesTarget, GoalBasedOptimizationResponse } from '@/lib/api'
 import { exportToCSV, exportToJSON } from '@/lib/utils'
 
 const chartColors = ['var(--chart-1)', 'var(--chart-2)', 'var(--chart-3)', 'var(--chart-4)', 'var(--chart-5)']
 
-export default function ScenariosPage() {
+// Smart currency formatting based on magnitude
+const formatCurrency = (value: number): string => {
+  if (Math.abs(value) >= 1000000) {
+    return `$${(value / 1000000).toFixed(2)}M`
+  } else if (Math.abs(value) >= 1000) {
+    return `$${(value / 1000).toFixed(0)}k`
+  } else {
+    return `$${value.toFixed(0)}`
+  }
+}
+
+// Format currency with sign (for changes)
+const formatCurrencyChange = (value: number): string => {
+  const sign = value > 0 ? '+' : ''
+  if (Math.abs(value) >= 1000000) {
+    return `${sign}$${(value / 1000000).toFixed(1)}M`
+  } else if (Math.abs(value) >= 1000) {
+    return `${sign}$${(value / 1000).toFixed(0)}k`
+  } else {
+    return `${sign}$${value.toFixed(0)}`
+  }
+}
+
+// Parse currency input string to number
+const parseCurrencyInput = (value: string): number => {
+  // Remove currency symbols, commas, spaces
+  const cleaned = value.replace(/[$,\s]/g, '')
+  const num = parseFloat(cleaned)
+  return isNaN(num) ? 0 : num
+}
+
+// Format number for input display (with commas)
+const formatInputCurrency = (value: number): string => {
+  return value.toLocaleString('en-US', { maximumFractionDigits: 0 })
+}
+
+export default function BudgetPlanningPage() {
   const router = useRouter()
-  const { results, scenarios, addScenario, optimization } = useAppState()
+  const { results, scenarios, addScenario, optimization, setOptimization } = useAppState()
 
   const [scenarioName, setScenarioName] = useState('')
   const [spendAllocation, setSpendAllocation] = useState<Record<string, number>>({})
   const [isLoading, setIsLoading] = useState(false)
+  const [isOptimizing, setIsOptimizing] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [selectedChannel, setSelectedChannel] = useState<string | null>(null)
   const [projectedResults, setProjectedResults] = useState<{
@@ -33,14 +74,55 @@ export default function ScenariosPage() {
     roi: number
   } | null>(null)
 
-  // Initialize spend allocation from ROI data
+  // New state for enhanced planning features
+  const [budgetInputMode, setBudgetInputMode] = useState(false)
+  const [budgetInputValue, setBudgetInputValue] = useState('')
+  const [activeQuickScenario, setActiveQuickScenario] = useState<string | null>('historical')
+
+  // Goal-based planning state
+  const [planningMode, setPlanningMode] = useState<'budget' | 'sales'>('budget')
+  const [salesTarget, setSalesTarget] = useState('')
+  const [isCalculatingGoal, setIsCalculatingGoal] = useState(false)
+  const [goalResult, setGoalResult] = useState<GoalBasedOptimizationResponse | null>(null)
+
+  // Channel constraints state
+  const [constraints, setConstraints] = useState<Record<string, [number, number]>>({})
+  const [showConstraints, setShowConstraints] = useState(false)
+
+  // Initialize spend allocation - prefer optimized if available, otherwise use historical
+  useEffect(() => {
+    if (optimization?.optimalSpend && Object.keys(optimization.optimalSpend).length > 0) {
+      // Use optimized allocation if available from previous optimization
+      // Filter out total_spend if present
+      const filtered: Record<string, number> = {}
+      for (const [ch, spend] of Object.entries(optimization.optimalSpend)) {
+        if (!ch.toLowerCase().includes('total')) {
+          filtered[ch] = spend
+        }
+      }
+      setSpendAllocation(filtered)
+    } else if (results?.roi) {
+      // Fall back to historical allocation (exclude total_spend)
+      const allocation: Record<string, number> = {}
+      results.roi
+        .filter(r => !r.channel.toLowerCase().includes('total'))
+        .forEach(r => {
+          allocation[r.channel] = r.spend
+        })
+      setSpendAllocation(allocation)
+    }
+  }, [results, optimization])
+
+  // Initialize constraints for all channels
   useEffect(() => {
     if (results?.roi) {
-      const allocation: Record<string, number> = {}
-      results.roi.forEach(r => {
-        allocation[r.channel] = r.spend
-      })
-      setSpendAllocation(allocation)
+      const defaultConstraints: Record<string, [number, number]> = {}
+      results.roi
+        .filter(r => !r.channel.toLowerCase().includes('total'))
+        .forEach(r => {
+          defaultConstraints[r.channel] = [0.05, 0.80]
+        })
+      setConstraints(defaultConstraints)
     }
   }, [results])
 
@@ -49,18 +131,21 @@ export default function ScenariosPage() {
     if (results?.roi && Object.keys(spendAllocation).length > 0) {
       const totalSpend = Object.values(spendAllocation).reduce((sum, v) => sum + v, 0)
 
-      // Simple projection based on elasticities
+      // Simple projection based on elasticities (exclude total_spend)
       let expectedSales = 0
-      results.roi.forEach(r => {
-        const elasticity = results.elasticities?.[r.channel]?.mean || 0.1
-        const currentSpend = r.spend
-        const newSpend = spendAllocation[r.channel] || currentSpend
-        const spendRatio = newSpend / currentSpend
+      results.roi
+        .filter(r => !r.channel.toLowerCase().includes('total'))
+        .forEach(r => {
+          const elasticity = results.elasticities?.[r.channel]?.mean || 0.1
+          const baselineSpend = r.spend
+          // Use nullish coalescing to handle 0 values correctly (0 is a valid spend)
+          const newSpend = spendAllocation[r.channel] ?? baselineSpend
+          const spendRatio = baselineSpend > 0 ? newSpend / baselineSpend : 1
 
-        // Use elasticity to estimate contribution change
-        const contributionRatio = Math.pow(spendRatio, elasticity)
-        expectedSales += r.contribution * contributionRatio
-      })
+          // Use elasticity to estimate contribution change
+          const contributionRatio = Math.pow(spendRatio, elasticity)
+          expectedSales += r.contribution * contributionRatio
+        })
 
       setProjectedResults({
         total_spend: totalSpend,
@@ -74,7 +159,7 @@ export default function ScenariosPage() {
     return (
       <div className="flex flex-col h-screen">
         <header className="h-16 flex items-center px-8 border-b border-border shrink-0">
-          <h1 className="text-xl font-semibold text-foreground">Scenario Planning</h1>
+          <h1 className="text-xl font-semibold text-foreground">Budget Planning</h1>
         </header>
         <div className="flex-1 flex items-center justify-center">
           <div className="text-center space-y-4">
@@ -94,15 +179,142 @@ export default function ScenariosPage() {
 
   const handleReset = () => {
     const allocation: Record<string, number> = {}
-    results.roi.forEach(r => {
-      allocation[r.channel] = r.spend
-    })
+    results.roi
+      .filter(r => !r.channel.toLowerCase().includes('total'))
+      .forEach(r => {
+        allocation[r.channel] = r.spend
+      })
     setSpendAllocation(allocation)
+    setActiveQuickScenario('historical')
+    setBudgetInputMode(false)
+    setGoalResult(null)
   }
 
-  const handleLoadOptimized = () => {
-    if (optimization?.optimalSpend) {
-      setSpendAllocation(optimization.optimalSpend)
+  // Quick scenario: scale all channels by a percentage
+  const handleQuickScenario = (percentChange: number, label: string) => {
+    const multiplier = 1 + percentChange
+    const newAllocation: Record<string, number> = {}
+    mediaChannels.forEach(r => {
+      newAllocation[r.channel] = r.spend * multiplier
+    })
+    setSpendAllocation(newAllocation)
+    setActiveQuickScenario(label)
+    setBudgetInputMode(false)
+    setGoalResult(null)
+  }
+
+  // Budget input mode: set exact total budget and optimize
+  const handleBudgetOptimize = async () => {
+    const targetBudget = parseCurrencyInput(budgetInputValue)
+    if (targetBudget <= 0) {
+      setError('Please enter a valid budget amount')
+      return
+    }
+
+    setIsOptimizing(true)
+    setError(null)
+
+    try {
+      const result = await optimizeBudget({
+        total_budget: targetBudget,
+        constraints,
+      })
+
+      if (result.success && result.data) {
+        const data = result.data as { optimal_spend: Record<string, number>; current_spend: Record<string, number>; expected_lift: { current_sales: number; expected_sales: number; lift: number; lift_pct: number } }
+        setSpendAllocation(data.optimal_spend)
+        setActiveQuickScenario(null)
+        // Store optimization results for waterfall chart
+        setOptimization({
+          currentSpend: data.current_spend,
+          optimalSpend: data.optimal_spend,
+          expectedLift: data.expected_lift,
+        })
+      } else {
+        setError(result.error || 'Optimization failed')
+      }
+    } catch (err) {
+      setError('Failed to optimize budget')
+    } finally {
+      setIsOptimizing(false)
+    }
+  }
+
+  // Goal-based planning: find budget needed for target sales
+  const handleGoalBasedPlanning = async () => {
+    const target = parseCurrencyInput(salesTarget)
+    if (target <= 0) {
+      setError('Please enter a valid sales target')
+      return
+    }
+
+    setIsCalculatingGoal(true)
+    setError(null)
+
+    try {
+      const result = await optimizeForSalesTarget({
+        target_sales: target,
+        max_budget_multiplier: 3.0,
+      })
+
+      if (result.success && result.data) {
+        setGoalResult(result.data)
+      } else {
+        setError(result.error || 'Could not calculate required budget')
+      }
+    } catch (err) {
+      setError('Failed to calculate goal-based plan')
+    } finally {
+      setIsCalculatingGoal(false)
+    }
+  }
+
+  // Apply goal result to sliders
+  const handleApplyGoalResult = () => {
+    if (goalResult?.optimal_allocation) {
+      setSpendAllocation(goalResult.optimal_allocation)
+      setActiveQuickScenario(null)
+      setPlanningMode('budget')
+    }
+  }
+
+  const handleLoadOptimized = async () => {
+    // Calculate total from current slider positions
+    const currentTotal = Object.values(spendAllocation).reduce((sum, v) => sum + v, 0)
+
+    if (currentTotal <= 0) {
+      setError('Total budget must be greater than zero')
+      return
+    }
+
+    setIsOptimizing(true)
+    setError(null)
+
+    try {
+      const result = await optimizeBudget({
+        total_budget: currentTotal,
+        constraints,
+      })
+
+      if (result.success && result.data) {
+        const data = result.data as { optimal_spend: Record<string, number>; current_spend: Record<string, number>; expected_lift: { current_sales: number; expected_sales: number; lift: number; lift_pct: number } }
+        // The backend now filters out total_spend, so just use the result directly
+        setSpendAllocation(data.optimal_spend)
+        setActiveQuickScenario(null)
+        setGoalResult(null)
+        // Store optimization results for waterfall chart
+        setOptimization({
+          currentSpend: data.current_spend,
+          optimalSpend: data.optimal_spend,
+          expectedLift: data.expected_lift,
+        })
+      } else {
+        setError(result.error || 'Optimization failed')
+      }
+    } catch (err) {
+      setError('Failed to optimize budget')
+    } finally {
+      setIsOptimizing(false)
     }
   }
 
@@ -137,9 +349,10 @@ export default function ScenariosPage() {
     setIsLoading(false)
   }
 
-  // Get baseline values
-  const baselineTotalSpend = results.roi.reduce((sum, r) => sum + r.spend, 0)
-  const baselineTotalSales = results.roi.reduce((sum, r) => sum + r.contribution, 0)
+  // Get baseline values (exclude total_spend if present)
+  const mediaChannels = results.roi.filter(r => !r.channel.toLowerCase().includes('total'))
+  const baselineTotalSpend = mediaChannels.reduce((sum, r) => sum + r.spend, 0)
+  const baselineTotalSales = mediaChannels.reduce((sum, r) => sum + r.contribution, 0)
   const currentTotalSpend = Object.values(spendAllocation).reduce((sum, v) => sum + v, 0)
 
   // Calculate percent changes
@@ -150,22 +363,25 @@ export default function ScenariosPage() {
     ? ((projectedResults.expected_sales - baselineTotalSales) / baselineTotalSales) * 100
     : 0
 
-  const channels = results.roi.map((r, i) => {
-    const currentSpend = spendAllocation[r.channel] || r.spend
-    const change = r.spend > 0 ? ((currentSpend - r.spend) / r.spend) * 100 : 0
-    return {
-      name: r.channel,
-      baseline: r.spend,
-      spend: currentSpend,
-      change,
-      color: chartColors[i % chartColors.length],
-    }
-  })
+  const channels = results.roi
+    .filter(r => !r.channel.toLowerCase().includes('total'))
+    .map((r, i) => {
+      // Use nullish coalescing to handle 0 values correctly
+      const currentSpend = spendAllocation[r.channel] ?? r.spend
+      const change = r.spend > 0 ? ((currentSpend - r.spend) / r.spend) * 100 : 0
+      return {
+        name: r.channel,
+        baseline: r.spend,
+        spend: currentSpend,
+        change,
+        color: chartColors[i % chartColors.length],
+      }
+    })
 
   const maxSpend = Math.max(...channels.map(c => c.baseline)) * 2
 
   // Check if current allocation matches historical
-  const isHistorical = results.roi.every(
+  const isHistorical = mediaChannels.every(
     r => Math.abs((spendAllocation[r.channel] || 0) - r.spend) < 1
   )
 
@@ -176,6 +392,22 @@ export default function ScenariosPage() {
     )
 
   const historicalRoi = baselineTotalSpend > 0 ? baselineTotalSales / baselineTotalSpend : 0
+
+  // Calculate waterfall chart data when optimization results are available
+  const waterfallData = optimization?.optimalSpend
+    ? Object.entries(optimization.optimalSpend).map(([channel, optimal]) => {
+        const historicalChannelSpend = optimization.currentSpend[channel] || 0
+        const historicalTotalSpend = Object.values(optimization.currentSpend).reduce((a, b) => a + b, 0)
+        const proportionalCurrent = historicalTotalSpend > 0
+          ? (historicalChannelSpend / historicalTotalSpend) * currentTotalSpend
+          : 0
+        return {
+          name: channel.replace(/_spend|_cost/gi, ''),
+          value: optimal - proportionalCurrent,
+          fill: optimal > proportionalCurrent ? 'var(--success)' : 'var(--error)',
+        }
+      })
+    : []
 
   // Generate response curve data for selected channel
   const generateResponseCurve = (channelName: string) => {
@@ -248,8 +480,8 @@ export default function ScenariosPage() {
     <div className="flex flex-col h-screen">
       <header className="h-16 flex items-center justify-between px-8 border-b border-border shrink-0">
         <div className="flex items-center gap-4">
-          <h1 className="text-xl font-semibold text-foreground">Scenario Planning</h1>
-          <span className="text-sm text-foreground-muted">/ Step 8 of 8</span>
+          <h1 className="text-xl font-semibold text-foreground">Budget Planning</h1>
+          <span className="text-sm text-foreground-muted">/ Step 7 of 7</span>
         </div>
         <button className="flex items-center gap-2 px-3.5 h-9 rounded-lg border border-border text-foreground-muted hover:bg-card-hover">
           <CircleHelp className="w-4 h-4" />
@@ -267,39 +499,318 @@ export default function ScenariosPage() {
         <div className="grid grid-cols-2 gap-6">
           {/* Left Panel - Adjust Budget */}
           <div className="space-y-6">
+            {/* Planning Mode Toggle */}
             <div className="p-5 rounded-xl bg-card border border-border">
-              <h3 className="font-semibold text-foreground mb-4">Adjust Budget</h3>
-
-              {/* Budget Presets */}
-              <div className="flex gap-2 mb-4">
-                <button
-                  onClick={handleReset}
-                  className={`px-3 py-1.5 rounded-md text-sm transition-colors ${
-                    isHistorical
-                      ? 'bg-primary text-white'
-                      : 'border border-border hover:bg-card-hover'
-                  }`}
-                >
-                  Historical
-                </button>
-                {optimization?.optimalSpend && (
+              <div className="flex items-center gap-4 mb-4">
+                <h3 className="font-semibold text-foreground">Planning Mode</h3>
+                <div className="flex bg-background-secondary rounded-lg p-0.5">
                   <button
-                    onClick={handleLoadOptimized}
+                    onClick={() => setPlanningMode('budget')}
                     className={`px-3 py-1.5 rounded-md text-sm transition-colors ${
-                      isCurrentOptimized
+                      planningMode === 'budget'
                         ? 'bg-primary text-white'
-                        : 'border border-border hover:bg-card-hover'
+                        : 'text-foreground-muted hover:text-foreground'
                     }`}
                   >
-                    Optimized {optimization.expectedLift && `(+${optimization.expectedLift.lift_pct.toFixed(1)}%)`}
+                    <DollarSign className="w-3.5 h-3.5 inline mr-1" />
+                    Set Budget
                   </button>
-                )}
-                {!isHistorical && !isCurrentOptimized && (
-                  <span className="px-3 py-1.5 text-sm text-foreground-muted bg-background-secondary rounded-md">
-                    Custom
-                  </span>
-                )}
+                  <button
+                    onClick={() => setPlanningMode('sales')}
+                    className={`px-3 py-1.5 rounded-md text-sm transition-colors ${
+                      planningMode === 'sales'
+                        ? 'bg-primary text-white'
+                        : 'text-foreground-muted hover:text-foreground'
+                    }`}
+                  >
+                    <Target className="w-3.5 h-3.5 inline mr-1" />
+                    Set Sales Target
+                  </button>
+                </div>
               </div>
+
+              {planningMode === 'budget' ? (
+                <>
+                  {/* Quick Scenarios */}
+                  <div className="mb-4">
+                    <p className="text-xs text-foreground-muted mb-2">Quick Scenarios</p>
+                    <div className="flex flex-wrap gap-2">
+                      <button
+                        onClick={() => handleQuickScenario(-0.20, '-20%')}
+                        className={`px-3 py-1.5 rounded-md text-sm transition-colors ${
+                          activeQuickScenario === '-20%'
+                            ? 'bg-error/20 text-error border border-error'
+                            : 'border border-border hover:bg-card-hover'
+                        }`}
+                      >
+                        -20%
+                      </button>
+                      <button
+                        onClick={() => handleQuickScenario(-0.10, '-10%')}
+                        className={`px-3 py-1.5 rounded-md text-sm transition-colors ${
+                          activeQuickScenario === '-10%'
+                            ? 'bg-error/20 text-error border border-error'
+                            : 'border border-border hover:bg-card-hover'
+                        }`}
+                      >
+                        -10%
+                      </button>
+                      <button
+                        onClick={handleReset}
+                        className={`px-3 py-1.5 rounded-md text-sm transition-colors ${
+                          activeQuickScenario === 'historical' || isHistorical
+                            ? 'bg-primary text-white'
+                            : 'border border-border hover:bg-card-hover'
+                        }`}
+                      >
+                        Historical
+                      </button>
+                      <button
+                        onClick={() => handleQuickScenario(0.10, '+10%')}
+                        className={`px-3 py-1.5 rounded-md text-sm transition-colors ${
+                          activeQuickScenario === '+10%'
+                            ? 'bg-success/20 text-success border border-success'
+                            : 'border border-border hover:bg-card-hover'
+                        }`}
+                      >
+                        +10%
+                      </button>
+                      <button
+                        onClick={() => handleQuickScenario(0.20, '+20%')}
+                        className={`px-3 py-1.5 rounded-md text-sm transition-colors ${
+                          activeQuickScenario === '+20%'
+                            ? 'bg-success/20 text-success border border-success'
+                            : 'border border-border hover:bg-card-hover'
+                        }`}
+                      >
+                        +20%
+                      </button>
+                    </div>
+                  </div>
+
+                  {/* Budget Input Mode */}
+                  <div className="mb-4 p-3 bg-background-secondary rounded-lg">
+                    <p className="text-xs text-foreground-muted mb-2">Set Exact Budget & Optimize</p>
+                    <div className="flex gap-2">
+                      <div className="relative flex-1">
+                        <span className="absolute left-3 top-1/2 -translate-y-1/2 text-foreground-muted">$</span>
+                        <input
+                          type="text"
+                          placeholder={formatInputCurrency(baselineTotalSpend)}
+                          value={budgetInputValue}
+                          onChange={(e) => setBudgetInputValue(e.target.value)}
+                          className="w-full pl-7 pr-3 py-2 bg-background border border-border rounded-lg text-sm text-foreground font-mono"
+                        />
+                      </div>
+                      <button
+                        onClick={handleBudgetOptimize}
+                        disabled={isOptimizing}
+                        className="px-4 py-2 bg-primary text-white rounded-lg text-sm font-medium disabled:opacity-50"
+                      >
+                        {isOptimizing ? 'Optimizing...' : 'Optimize'}
+                      </button>
+                    </div>
+                  </div>
+
+                  {/* Current optimize button */}
+                  <div className="flex gap-2 mb-4">
+                    <button
+                      onClick={handleLoadOptimized}
+                      disabled={isOptimizing || currentTotalSpend <= 0}
+                      className={`px-3 py-1.5 rounded-md text-sm transition-colors ${
+                        isCurrentOptimized
+                          ? 'bg-primary text-white'
+                          : 'border border-border hover:bg-card-hover'
+                      } ${isOptimizing || currentTotalSpend <= 0 ? 'opacity-50 cursor-not-allowed' : ''}`}
+                    >
+                      {isOptimizing ? 'Optimizing...' : `Optimize for ${formatCurrency(currentTotalSpend)}`}
+                    </button>
+                    {!isHistorical && !isCurrentOptimized && activeQuickScenario === null && (
+                      <span className="px-3 py-1.5 text-sm text-foreground-muted bg-background-secondary rounded-md">
+                        Custom
+                      </span>
+                    )}
+                  </div>
+                </>
+              ) : (
+                /* Goal-Based Planning UI */
+                <div className="space-y-4">
+                  <div>
+                    <p className="text-xs text-foreground-muted mb-2">
+                      Enter your target sales - we'll calculate the required budget
+                    </p>
+                    <div className="flex gap-2">
+                      <div className="relative flex-1">
+                        <span className="absolute left-3 top-1/2 -translate-y-1/2 text-foreground-muted">$</span>
+                        <input
+                          type="text"
+                          placeholder={formatInputCurrency(baselineTotalSales)}
+                          value={salesTarget}
+                          onChange={(e) => setSalesTarget(e.target.value)}
+                          className="w-full pl-7 pr-3 py-2 bg-background border border-border rounded-lg text-sm text-foreground font-mono"
+                        />
+                      </div>
+                      <button
+                        onClick={handleGoalBasedPlanning}
+                        disabled={isCalculatingGoal}
+                        className="px-4 py-2 bg-primary text-white rounded-lg text-sm font-medium disabled:opacity-50"
+                      >
+                        {isCalculatingGoal ? 'Calculating...' : 'Calculate'}
+                      </button>
+                    </div>
+                  </div>
+
+                  {/* Goal Result */}
+                  {goalResult && (
+                    <div className={`p-4 rounded-lg border ${
+                      goalResult.achievable
+                        ? 'bg-success/5 border-success'
+                        : 'bg-warning/5 border-warning'
+                    }`}>
+                      <p className={`text-sm font-medium mb-2 ${
+                        goalResult.achievable ? 'text-success' : 'text-warning'
+                      }`}>
+                        {goalResult.message}
+                      </p>
+                      <div className="grid grid-cols-2 gap-3 mb-3">
+                        <div>
+                          <p className="text-[10px] text-foreground-muted">Required Budget</p>
+                          <p className="text-lg font-semibold font-mono text-foreground">
+                            {formatCurrency(goalResult.required_budget)}
+                          </p>
+                          <p className={`text-[10px] ${goalResult.budget_change_pct > 0 ? 'text-warning' : 'text-success'}`}>
+                            {goalResult.budget_change_pct > 0 ? '+' : ''}{goalResult.budget_change_pct.toFixed(1)}% vs historical
+                          </p>
+                        </div>
+                        <div>
+                          <p className="text-[10px] text-foreground-muted">Projected Sales</p>
+                          <p className="text-lg font-semibold font-mono text-foreground">
+                            {formatCurrency(goalResult.projected_sales)}
+                          </p>
+                        </div>
+                      </div>
+                      <button
+                        onClick={handleApplyGoalResult}
+                        className="w-full px-3 py-2 bg-primary text-white rounded-lg text-sm font-medium"
+                      >
+                        Apply to Sliders
+                      </button>
+                    </div>
+                  )}
+                </div>
+              )}
+            </div>
+
+            {/* Channel Constraints Card */}
+            <div className="p-5 rounded-xl bg-card border border-border">
+              <div className="flex items-center justify-between mb-4">
+                <div>
+                  <h3 className="font-semibold text-foreground">Channel Constraints</h3>
+                  <p className="text-xs text-foreground-muted mt-1">Set min/max budget allocation per channel</p>
+                </div>
+                <button
+                  onClick={() => setShowConstraints(!showConstraints)}
+                  className="text-xs text-primary hover:text-primary-hover px-2 py-1 rounded border border-primary/30"
+                >
+                  {showConstraints ? 'Hide' : 'Show'} Constraints
+                </button>
+              </div>
+
+              {showConstraints && (
+                <>
+                  {/* Table Header */}
+                  <div className="grid grid-cols-[1fr,60px,1fr,60px] gap-2 text-xs text-foreground-muted px-1 mb-2">
+                    <span>Channel</span>
+                    <span className="text-center">Min</span>
+                    <span className="text-center">Allowed Range</span>
+                    <span className="text-center">Max</span>
+                  </div>
+
+                  {/* Constraint Rows */}
+                  <div className="space-y-3">
+                    {Object.entries(constraints).map(([channel, [min, max]]) => (
+                      <div key={channel} className="grid grid-cols-[1fr,60px,1fr,60px] gap-2 items-center">
+                        {/* Channel Name */}
+                        <span className="text-sm font-medium text-foreground truncate" title={channel}>
+                          {channel.replace(/_spend|_cost/gi, '')}
+                        </span>
+
+                        {/* Min Input */}
+                        <div className="relative">
+                          <input
+                            type="number"
+                            min="0"
+                            max="50"
+                            value={Math.round(min * 100)}
+                            onChange={(e) => {
+                              const newMin = Math.min(Number(e.target.value) / 100, max - 0.05)
+                              setConstraints(prev => ({
+                                ...prev,
+                                [channel]: [Math.max(0, newMin), prev[channel][1]],
+                              }))
+                            }}
+                            className="w-full px-2 py-1.5 text-sm text-center bg-background border border-border rounded"
+                          />
+                          <span className="absolute right-2 top-1/2 -translate-y-1/2 text-xs text-foreground-muted">%</span>
+                        </div>
+
+                        {/* Visual Range Bar */}
+                        <div className="relative h-3 bg-background-secondary rounded-full overflow-hidden">
+                          <div
+                            className="absolute top-0 bottom-0 bg-primary/30 rounded-full"
+                            style={{
+                              left: `${min * 100}%`,
+                              width: `${(max - min) * 100}%`,
+                            }}
+                          />
+                        </div>
+
+                        {/* Max Input */}
+                        <div className="relative">
+                          <input
+                            type="number"
+                            min="20"
+                            max="100"
+                            value={Math.round(max * 100)}
+                            onChange={(e) => {
+                              const newMax = Math.max(Number(e.target.value) / 100, min + 0.05)
+                              setConstraints(prev => ({
+                                ...prev,
+                                [channel]: [prev[channel][0], Math.min(1, newMax)],
+                              }))
+                            }}
+                            className="w-full px-2 py-1.5 text-sm text-center bg-background border border-border rounded"
+                          />
+                          <span className="absolute right-2 top-1/2 -translate-y-1/2 text-xs text-foreground-muted">%</span>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+
+                  {/* Reset Button */}
+                  <div className="mt-4 pt-3 border-t border-border flex justify-end">
+                    <button
+                      onClick={() => {
+                        const defaultConstraints: Record<string, [number, number]> = {}
+                        results.roi
+                          .filter(r => !r.channel.toLowerCase().includes('total'))
+                          .forEach(r => {
+                            defaultConstraints[r.channel] = [0.05, 0.80]
+                          })
+                        setConstraints(defaultConstraints)
+                      }}
+                      className="text-xs text-foreground-muted hover:text-foreground px-2 py-1 rounded border border-border"
+                    >
+                      Reset to Defaults
+                    </button>
+                  </div>
+                </>
+              )}
+            </div>
+
+            {/* Channel Sliders Card */}
+            <div className="p-5 rounded-xl bg-card border border-border">
+              <h3 className="font-semibold text-foreground mb-4">Channel Allocation</h3>
 
               {/* Channel Sliders */}
               <div className="space-y-0 divide-y divide-border">
@@ -314,7 +825,7 @@ export default function ScenariosPage() {
                         </span>
                       </div>
                       <div className="flex items-center gap-3">
-                        <span className="text-sm font-mono text-foreground">${(ch.spend / 1000).toFixed(0)}K</span>
+                        <span className="text-sm font-mono text-foreground">{formatCurrency(ch.spend)}</span>
                         <span className={`text-xs ${ch.change > 0 ? 'text-success' : ch.change < 0 ? 'text-error' : 'text-foreground-muted'}`}>
                           {ch.change > 0 ? '+' : ''}{ch.change.toFixed(0)}%
                         </span>
@@ -339,6 +850,7 @@ export default function ScenariosPage() {
                           ...prev,
                           [ch.name]: Number(e.target.value),
                         }))
+                        setActiveQuickScenario(null) // Clear quick scenario when manually adjusting
                       }}
                       className="w-full h-1.5 bg-background-secondary rounded-full appearance-none cursor-pointer"
                       style={{
@@ -417,7 +929,7 @@ export default function ScenariosPage() {
                 <div>
                   <p className="text-[10px] text-foreground-muted">Spend</p>
                   <p className="text-lg font-semibold font-mono text-foreground">
-                    ${(currentTotalSpend / 1e6).toFixed(2)}M
+                    {formatCurrency(currentTotalSpend)}
                   </p>
                   {spendChange !== 0 && (
                     <p className={`text-[10px] ${spendChange > 0 ? 'text-warning' : 'text-success'}`}>
@@ -428,7 +940,7 @@ export default function ScenariosPage() {
                 <div>
                   <p className="text-[10px] text-foreground-muted">Sales</p>
                   <p className="text-lg font-semibold font-mono text-foreground">
-                    ${((projectedResults?.expected_sales || 0) / 1e6).toFixed(2)}M
+                    {formatCurrency(projectedResults?.expected_sales || 0)}
                   </p>
                   {salesChange !== 0 && (
                     <p className={`text-[10px] ${salesChange > 0 ? 'text-success' : 'text-error'}`}>
@@ -460,11 +972,11 @@ export default function ScenariosPage() {
                   <div className="mt-3 space-y-3">
                     <div>
                       <p className="text-[10px] text-foreground-muted">Spend</p>
-                      <p className="text-lg font-semibold font-mono text-foreground">${(baselineTotalSpend / 1e6).toFixed(2)}M</p>
+                      <p className="text-lg font-semibold font-mono text-foreground">{formatCurrency(baselineTotalSpend)}</p>
                     </div>
                     <div>
                       <p className="text-[10px] text-foreground-muted">Sales</p>
-                      <p className="text-lg font-semibold font-mono text-foreground">${(baselineTotalSales / 1e6).toFixed(2)}M</p>
+                      <p className="text-lg font-semibold font-mono text-foreground">{formatCurrency(baselineTotalSales)}</p>
                     </div>
                     <div>
                       <p className="text-[10px] text-foreground-muted">ROI</p>
@@ -485,7 +997,7 @@ export default function ScenariosPage() {
                     <div>
                       <p className="text-[10px] text-foreground-muted">Spend</p>
                       <p className="text-lg font-semibold font-mono text-foreground">
-                        ${(currentTotalSpend / 1e6).toFixed(2)}M
+                        {formatCurrency(currentTotalSpend)}
                         {spendChange !== 0 && (
                           <span className={`text-xs ml-1 ${spendChange > 0 ? 'text-warning' : 'text-success'}`}>
                             ({spendChange > 0 ? '+' : ''}{spendChange.toFixed(0)}%)
@@ -496,7 +1008,7 @@ export default function ScenariosPage() {
                     <div>
                       <p className="text-[10px] text-foreground-muted">Sales</p>
                       <p className="text-lg font-semibold font-mono text-foreground">
-                        ${((projectedResults?.expected_sales || 0) / 1e6).toFixed(2)}M
+                        {formatCurrency(projectedResults?.expected_sales || 0)}
                         {salesChange !== 0 && (
                           <span className={`text-xs ml-1 ${salesChange > 0 ? 'text-success' : 'text-error'}`}>
                             ({salesChange > 0 ? '+' : ''}{salesChange.toFixed(0)}%)
@@ -530,6 +1042,55 @@ export default function ScenariosPage() {
                 )}
               </div>
             </div>
+
+            {/* Waterfall Chart - Budget Reallocation */}
+            {waterfallData.length > 0 && (
+              <div className="p-5 rounded-xl bg-card border border-border">
+                <h3 className="font-semibold text-foreground mb-2">Budget Reallocation</h3>
+                <p className="text-xs text-foreground-muted mb-4">Change from proportional to optimal allocation</p>
+                <div className="h-[180px]">
+                  <ResponsiveContainer width="100%" height="100%">
+                    <BarChart data={waterfallData}>
+                      <CartesianGrid strokeDasharray="3 3" stroke="var(--border)" />
+                      <XAxis
+                        dataKey="name"
+                        stroke="var(--foreground-muted)"
+                        fontSize={10}
+                        tickLine={false}
+                        angle={-45}
+                        textAnchor="end"
+                        height={60}
+                      />
+                      <YAxis
+                        stroke="var(--foreground-muted)"
+                        fontSize={10}
+                        tickFormatter={(v) => formatCurrency(v)}
+                      />
+                      <Tooltip
+                        contentStyle={{
+                          backgroundColor: 'var(--card)',
+                          border: '1px solid var(--border)',
+                          borderRadius: '8px',
+                        }}
+                        formatter={(value: number) => [
+                          formatCurrencyChange(value),
+                          'Change',
+                        ]}
+                      />
+                      <ReferenceLine y={0} stroke="var(--foreground-muted)" />
+                      <Bar
+                        dataKey="value"
+                        radius={[4, 4, 0, 0]}
+                      >
+                        {waterfallData.map((entry, index) => (
+                          <Cell key={`cell-${index}`} fill={entry.fill} />
+                        ))}
+                      </Bar>
+                    </BarChart>
+                  </ResponsiveContainer>
+                </div>
+              </div>
+            )}
 
             {/* Save Current Scenario */}
             <div className="p-5 rounded-xl bg-card border border-border">
@@ -565,7 +1126,7 @@ export default function ScenariosPage() {
                       <div>
                         <p className="text-sm font-medium text-foreground">{s.name}</p>
                         <p className="text-[10px] text-foreground-muted">
-                          ${(s.total_spend / 1e6).toFixed(2)}M → ${(s.projected_sales / 1e6).toFixed(2)}M
+                          {formatCurrency(s.total_spend)} → {formatCurrency(s.projected_sales)}
                         </p>
                       </div>
                       <button

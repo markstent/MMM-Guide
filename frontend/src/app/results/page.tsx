@@ -72,7 +72,7 @@ export default function ResultsPage() {
 
   const handleContinue = () => {
     setCurrentStep(7)
-    router.push('/optimization')
+    router.push('/scenarios')
   }
 
   const handleExportPDF = async () => {
@@ -222,7 +222,7 @@ export default function ResultsPage() {
       <header className="h-16 flex items-center justify-between px-8 border-b border-border shrink-0">
         <div className="flex items-center gap-4">
           <h1 className="text-xl font-semibold text-foreground">Results Analysis</h1>
-          <span className="text-sm text-foreground-muted">/ Step 6 of 8</span>
+          <span className="text-sm text-foreground-muted">/ Step 6 of 7</span>
         </div>
         <div className="flex items-center gap-2">
           <button
@@ -968,6 +968,10 @@ export default function ResultsPage() {
                                 </BarChart>
                               </ResponsiveContainer>
                             </div>
+                            <p className="text-xs text-foreground-muted mt-2">
+                              Shapley values use game theory to fairly attribute sales contribution to each channel,
+                              accounting for interaction effects between channels.
+                            </p>
                           </div>
 
                           {/* Share Pie Chart - simplified */}
@@ -995,6 +999,10 @@ export default function ResultsPage() {
                                 </BarChart>
                               </ResponsiveContainer>
                             </div>
+                            <p className="text-xs text-foreground-muted mt-2">
+                              Each channel's percentage of total attributed sales. Shows the relative importance
+                              of each marketing channel in driving overall sales.
+                            </p>
                           </div>
                         </div>
 
@@ -1310,7 +1318,7 @@ export default function ResultsPage() {
               onClick={handleContinue}
               className="flex items-center gap-2 px-6 py-2.5 bg-primary text-white font-medium rounded-lg hover:bg-primary-hover transition-colors"
             >
-              Continue to Budget Optimization
+              Continue to Budget Planning
               <ArrowRight className="w-4 h-4" />
             </button>
           </div>

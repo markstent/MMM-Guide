@@ -11,9 +11,9 @@ import {
   Play,
   BarChart3,
   PieChart,
-  GitBranch,
   Moon,
   Sun,
+  HelpCircle,
 } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { useAppState } from '@/lib/store'
@@ -25,8 +25,7 @@ const navItems = [
   { name: 'Configuration', href: '/config', icon: Settings, step: 4 },
   { name: 'Training', href: '/training', icon: Play, step: 5 },
   { name: 'Results', href: '/results', icon: BarChart3, step: 6 },
-  { name: 'Budget Optimization', href: '/optimization', icon: PieChart, step: 7 },
-  { name: 'Scenario Planning', href: '/scenarios', icon: GitBranch, step: 8 },
+  { name: 'Budget Planning', href: '/scenarios', icon: PieChart, step: 7 },
 ]
 
 export function Sidebar() {
@@ -36,7 +35,7 @@ export function Sidebar() {
 
   // Initialize dark mode from localStorage or system preference
   useEffect(() => {
-    const stored = localStorage.getItem('mmm-dark-mode')
+    const stored = localStorage.getItem('mmmpack-dark-mode')
     if (stored !== null) {
       setDarkMode(stored === 'true')
     } else {
@@ -53,7 +52,7 @@ export function Sidebar() {
     } else {
       document.documentElement.classList.remove('dark')
     }
-    localStorage.setItem('mmm-dark-mode', String(darkMode))
+    localStorage.setItem('mmmpack-dark-mode', String(darkMode))
   }, [darkMode])
 
   const toggleDarkMode = () => {
@@ -61,7 +60,7 @@ export function Sidebar() {
   }
 
   // Calculate progress based on what's completed
-  const progress = (currentStep / 8) * 100
+  const progress = (currentStep / 7) * 100
 
   return (
     <div className="w-[260px] h-screen bg-background-secondary border-r border-border flex flex-col">
@@ -70,7 +69,7 @@ export function Sidebar() {
         <div className="w-8 h-8 rounded-lg bg-primary flex items-center justify-center">
           <BarChart3 className="w-5 h-5 text-white" />
         </div>
-        <span className="font-semibold text-foreground">MMM Studio</span>
+        <span className="font-semibold text-foreground">MMMpact</span>
       </div>
 
       {/* Navigation */}
@@ -156,6 +155,20 @@ export function Sidebar() {
 
       {/* Footer */}
       <div className="p-4 border-t border-border space-y-3">
+        {/* Help Link */}
+        <Link
+          href="/help"
+          className={cn(
+            'flex items-center gap-3 px-3 py-2 rounded-lg text-sm transition-colors',
+            pathname === '/help'
+              ? 'bg-primary text-white'
+              : 'text-foreground-muted hover:bg-card-hover hover:text-foreground'
+          )}
+        >
+          <HelpCircle className="w-4 h-4" />
+          <span>Help & Docs</span>
+        </Link>
+
         {/* Dark Mode Toggle */}
         <button
           onClick={toggleDarkMode}
@@ -196,7 +209,7 @@ export function Sidebar() {
                 style={{ width: `${progress}%` }}
               />
             </div>
-            <span className="text-xs text-foreground-muted">Step {currentStep} of 8</span>
+            <span className="text-xs text-foreground-muted">Step {currentStep} of 7</span>
           </div>
         </div>
       </div>

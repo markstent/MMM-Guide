@@ -63,18 +63,77 @@ export default function TrainingPage() {
           const resultsResponse = await getModelResults()
           if (resultsResponse.success && resultsResponse.data) {
             const data = resultsResponse.data as any
+
+            // Response curves are already in camelCase from backend
+            const responseCurves = data.response_curves
+              ? Object.fromEntries(
+                  Object.entries(data.response_curves).map(([channel, points]) => [
+                    channel,
+                    (points as any[]).map(p => ({
+                      spend: p.spend,
+                      response: p.response,
+                      marginalRoi: p.marginalRoi,
+                      isCurrent: p.isCurrent,
+                    }))
+                  ])
+                )
+              : undefined
+
+            // Transform Shapley attribution
+            const shapleyAttribution = data.shapley_attribution?.map((item: any) => ({
+              channel: item.channel,
+              shapleyValue: item.shapley_value,
+              share: item.share / 100, // Convert from percentage to decimal
+              directContribution: item.direct_contribution,
+            }))
+
+            // Transform residual analysis
+            const residualAnalysis = data.residual_analysis ? {
+              mean: data.residual_analysis.mean,
+              std: data.residual_analysis.std,
+              normalityTest: data.residual_analysis.normality_test,
+              autocorrelation: data.residual_analysis.autocorrelation,
+              durbinWatson: data.residual_analysis.durbin_watson,
+              histogram: data.residual_analysis.histogram,
+              residuals: data.residual_analysis.residuals,
+            } : undefined
+
+            // Transform posterior predictive
+            const posteriorPredictive = data.posterior_predictive ? {
+              actual: data.posterior_predictive.actual,
+              predicted: data.posterior_predictive.predicted,
+              predictedCiLower: data.posterior_predictive.predicted_ci_lower,
+              predictedCiUpper: data.posterior_predictive.predicted_ci_upper,
+            } : undefined
+
+            // Transform holdout metrics (check for error case from backend)
+            const holdoutMetrics = data.holdout_metrics && !data.holdout_metrics.error ? {
+              mape: data.holdout_metrics.mape / 100, // Convert from percentage to decimal
+              rmse: data.holdout_metrics.rmse,
+              mae: data.holdout_metrics.mae,
+              rSquared: data.holdout_metrics.r_squared,
+              nPeriods: data.holdout_metrics.n_periods,
+            } : null
+
             setResults({
               rSquared: data.r_squared,
-              mape: data.mape,
+              mape: data.mape / 100, // Convert from percentage to decimal
               elasticities: data.elasticities,
               roi: data.roi,
-              diagnostics: {
+              diagnostics: data.diagnostics || {
                 converged: trainData.converged,
                 rhat_max: trainData.diagnostics?.rhat_max || 1.0,
                 ess_min: trainData.diagnostics?.ess_min || 1000,
                 divergences: trainData.diagnostics?.divergences || 0,
               },
               decomposition: data.decomposition,
+              // Enhanced results
+              residualAnalysis,
+              posteriorPredictive,
+              responseCurves,
+              shapleyAttribution,
+              holdoutMetrics,
+              transformations: data.transformations,
             })
           }
 
@@ -114,7 +173,7 @@ export default function TrainingPage() {
       <header className="h-16 flex items-center justify-between px-8 border-b border-border shrink-0">
         <div className="flex items-center gap-4">
           <h1 className="text-xl font-semibold text-foreground">Model Training</h1>
-          <span className="text-sm text-foreground-muted">/ Step 5 of 8</span>
+          <span className="text-sm text-foreground-muted">/ Step 5 of 7</span>
         </div>
       </header>
 

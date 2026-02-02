@@ -88,7 +88,7 @@ export default function DataUploadPage() {
       <header className="h-16 flex items-center justify-between px-8 border-b border-border shrink-0">
         <div className="flex items-center gap-4">
           <h1 className="text-xl font-semibold text-foreground">Data Upload</h1>
-          <span className="text-sm text-foreground-muted">/ Step 1 of 8</span>
+          <span className="text-sm text-foreground-muted">/ Step 1 of 7</span>
         </div>
         <button className="flex items-center gap-2 px-3.5 h-9 rounded-lg border border-border text-foreground-muted hover:text-foreground hover:bg-card-hover transition-colors">
           <CircleHelp className="w-4 h-4" />
@@ -152,44 +152,24 @@ export default function DataUploadPage() {
             {/* Sample Data */}
             <div className="space-y-3">
               <p className="text-base font-medium text-foreground">Or use sample data to explore</p>
-              <div className="grid grid-cols-2 gap-4">
-                <button
-                  onClick={() => handleSampleData('conjura')}
-                  disabled={isLoading}
-                  className="flex items-start gap-4 p-4 rounded-xl bg-card border border-border hover:border-primary transition-colors text-left disabled:opacity-50"
-                >
-                  <div className="w-10 h-10 rounded-lg bg-chart-1/20 flex items-center justify-center">
-                    <FileSpreadsheet className="w-5 h-5 text-chart-1" />
-                  </div>
-                  <div>
-                    <h3 className="font-medium text-foreground">Conjura MMM Dataset</h3>
-                    <p className="text-sm text-foreground-muted mt-0.5">
-                      Real marketing data with multiple channels and territories.
-                    </p>
-                    <span className="inline-block mt-2 text-xs text-primary font-medium">
-                      Load Sample
-                    </span>
-                  </div>
-                </button>
-
-                <button
-                  disabled
-                  className="flex items-start gap-4 p-4 rounded-xl bg-card border border-border opacity-50 cursor-not-allowed text-left"
-                >
-                  <div className="w-10 h-10 rounded-lg bg-chart-2/20 flex items-center justify-center">
-                    <FileSpreadsheet className="w-5 h-5 text-chart-2" />
-                  </div>
-                  <div>
-                    <h3 className="font-medium text-foreground">E-commerce Demo</h3>
-                    <p className="text-sm text-foreground-muted mt-0.5">
-                      Coming soon - 2 years of daily data with 6 media channels.
-                    </p>
-                    <span className="inline-block mt-2 text-xs text-foreground-subtle font-medium">
-                      Coming Soon
-                    </span>
-                  </div>
-                </button>
-              </div>
+              <button
+                onClick={() => handleSampleData('demo')}
+                disabled={isLoading}
+                className="flex items-start gap-4 p-4 rounded-xl bg-card border border-border hover:border-primary transition-colors text-left disabled:opacity-50 w-full max-w-md"
+              >
+                <div className="w-10 h-10 rounded-lg bg-chart-1/20 flex items-center justify-center">
+                  <FileSpreadsheet className="w-5 h-5 text-chart-1" />
+                </div>
+                <div>
+                  <h3 className="font-medium text-foreground">Demo Dataset</h3>
+                  <p className="text-sm text-foreground-muted mt-0.5">
+                    230 weeks of marketing data with Google and Facebook spend.
+                  </p>
+                  <span className="inline-block mt-2 text-xs text-primary font-medium">
+                    Load Sample
+                  </span>
+                </div>
+              </button>
             </div>
           </div>
 
